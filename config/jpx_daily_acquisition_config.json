@@ -1,0 +1,126 @@
+{
+  "schema_version": "1.0",
+  "config_version": "2026-10-08-historical-direct-offline-tested",
+  "purpose": "Acquire only JPX daily-report sessions that are not already valid locally",
+  "timezone": "Asia/Tokyo",
+  "device": "LOCAL_LINUX",
+  "project_root": "${PROJECT_ROOT}",
+  "schedule": {
+    "start_local": "08:30:00",
+    "external_acquisition_not_before": "08:32:00",
+    "precheck_only_before_external": true
+  },
+  "startup": {
+    "first_reads": [
+      "00_START_HERE.md",
+      "state/runtime/runtime_snapshot.json"
+    ],
+    "follow_start_here_conditional_rules": true,
+    "bulk_read_master_prompt_or_analysis": false
+  },
+  "selection": {
+    "mode": "MISSING_ONLY",
+    "fixed_max_sessions_per_run": null,
+    "order": "STATE_AND_MEMO_PRIORITY_THEN_NEWEST_PUBLISHED_MISSING",
+    "require_verified_jpx_calendar": true,
+    "require_visible_published_session_confirmation": true,
+    "never_guess_session_or_url": true
+  },
+  "deduplication": {
+    "never_redownload_existing_valid_session": true,
+    "skip_if_any": [
+      "OFFICIAL_VALIDATED",
+      "VALID_JPX_RAW_PDF",
+      "HASH_VERIFIED_PARSED_OUTPUT",
+      "VALIDATED_RETENTION_MANIFEST_ENTRY",
+      "VALID_SAME_SESSION_LOCAL_FILE"
+    ],
+    "reuse_existing_valid_file": true,
+    "on_corrupt_or_hash_mismatch": "REVIEW_REQUIRED_NO_AUTOMATIC_REDOWNLOAD",
+    "overwrite_existing": false
+  },
+  "historical_direct": {
+    "scope": "HISTORICAL_CATCH_UP_ONLY",
+    "acquisition_method": "OFFICIAL_LISTING_DIRECT_HTTPS",
+    "allowed_sessions": ["2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08"],
+    "forecast_target": "2026-10-13",
+    "listing_url": "https://www.jpx.co.jp/markets/statistics-equities/daily/",
+    "allowed_hosts": ["www.jpx.co.jp", "jpx.co.jp"],
+    "execution": "EXPLICIT_ONE_SESSION_ONLY",
+    "scheduled": false,
+    "automatic_retry": false,
+    "max_redirects": 3,
+    "max_listing_bytes": 2097152,
+    "max_pdf_bytes": 67108864,
+    "adapter": "providers/jp/jpx_manual/historical_direct.py",
+    "evidence_store": "data/jpx_historical_direct/",
+    "automatic_manifest_or_runtime_update": false,
+    "registration": "Validated immutable bundle requires explicit Manifest registration and existing Historical Close Bridge; never label it manual/browser.",
+    "status": "FIXTURE_TESTED_LIVE_NOT_RUN",
+    "terms_status": "UNRESOLVED"
+  },
+  "acquisition": {
+    "provider": "JPX_DAILY_REPORT",
+    "processing": "SEQUENTIAL_ONLY",
+    "bulk_download": false,
+    "concurrent_downloads": false,
+    "browser_only": true,
+    "primary_browser": "GOOGLE_CHROME_VISIBLE_RDC",
+    "http_script_download": false,
+    "unavailable_browser_result": "FAILED_VISIBLE_GOOGLE_CHROME_UNAVAILABLE",
+    "unlisted_result": "NOT_YET_AVAILABLE",
+    "browser_controller": "REMOTE_DESKTOP_COMMANDER",
+    "visible_interactive_browser_only": true,
+    "headless_chrome": false,
+    "cdp_automated_download": false,
+    "direct_http_curl_wget": false,
+    "direct_http_python_node": false,
+    "url_guessing": false,
+    "automatic_retry_loop": false
+  },
+  "stop_on": [
+    "CAPTCHA",
+    "HTTP_403",
+    "ACCESS_DENIED",
+    "RATE_LIMIT",
+    "SECURITY_CHALLENGE",
+    "ACCESS_RESTRICTION"
+  ],
+  "validation": {
+    "pdf_valid": true,
+    "session_date_match": true,
+    "core6": [
+      "6857",
+      "7203",
+      "8306",
+      "1605",
+      "9433",
+      "3197"
+    ],
+    "core6_required_count": 6,
+    "duplicate_required": 0,
+    "missing_required": 0,
+    "ohlc_relation": "PASS",
+    "normalized_schema": "PASS",
+    "sha256_required": true,
+    "parser": "providers/jp/jpx_manual/parser.py",
+    "parser_changes_allowed": false
+  },
+  "state_update": {
+    "validated_status": "OFFICIAL_VALIDATED",
+    "update_recent_sessions_on_success": true,
+    "refresh_runtime_snapshot": "engine/refresh_runtime_snapshot.py",
+    "update_only_after_full_validation": true
+  },
+  "prohibited_changes": [
+    "HISTORICAL_YFINANCE_CSV",
+    "HISTORICAL_RAW",
+    "PARSER",
+    "THRESHOLD",
+    "BASELINE",
+    "FORECAST",
+    "SCORING",
+    "TRIAL_START",
+    "PAID_UPGRADE"
+  ]
+}

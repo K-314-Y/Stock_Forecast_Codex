@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.0",
+  "core_version": "core-v1",
+  "status": "SPEC_MEMBERS_DEFINED_IDENTIFIERS_UNVERIFIED",
+  "source": "MASTER_PROMPT.md section 2",
+  "markets": {
+    "Japan": [
+      {
+        "name": "Advantest",
+        "security_id": null,
+        "provider_symbols": {},
+        "identity_status": "UNVERIFIED"
+      },
+      {
+        "name": "Toyota Motor",
+        "security_id": null,
+        "provider_symbols": {},
+        "identity_status": "UNVERIFIED"
+      },
+      {
+        "name": "Mitsubishi UFJ Financial Group",
+        "security_id": null,
+        "provider_symbols": {},
+        "identity_status": "UNVERIFIED"
+      },
+      {
+        "name": "INPEX",
+        "security_id": null,
+        "provider_symbols": {},
+        "identity_status": "UNVERIFIED"
+      },
+      {
+        "name": "KDDI",
+        "security_id": null,
+        "provider_symbols": {},
+        "identity_status": "UNVERIFIED"
+      },
+      {
+        "name": "Skylark Holdings",
+        "security_id": null,
+        "provider_symbols": {},
+        "identity_status": "UNVERIFIED"
+      }
+    ],
+    "US": [
+      {
+        "name": "NVIDIA",
+        "security_id": null,
+        "provider_symbols": {},
+        "identity_status": "UNVERIFIED"
+      },
+      {
+        "name": "Microsoft",
+        "security_id": null,
+        "provider_symbols": {},
+        "identity_status": "UNVERIFIED"
+      },
+      {
+        "name": "Walmart",
+        "security_id": null,
+        "provider_symbols": {},
+        "identity_status": "UNVERIFIED"
+      },
+      {
+        "name": "Caterpillar",
+        "security_id": null,
+        "provider_symbols": {},
+        "identity_status": "UNVERIFIED"
+      },
+      {
+        "name": "Coca-Cola",
+        "security_id": null,
+        "provider_symbols": {},
+        "identity_status": "UNVERIFIED"
+      },
+      {
+        "name": "NextEra Energy",
+        "security_id": null,
+        "provider_symbols": {},
+        "identity_status": "UNVERIFIED"
+      }
+    ]
+  }
+}

@@ -1,0 +1,137 @@
+{
+  "schema_version": "1.2-comparison-draft",
+  "purpose": "Japan zero-additional-cost provider comparison; no execution or selection",
+  "mode": "FREE_FORWARD_TRIAL_PREP",
+  "selected_provider": null,
+  "candidates": [],
+  "execution_enabled": false,
+  "paid_data_enabled": false,
+  "broker_access_allowed": false,
+  "instructions": [
+    "Copy candidate_template into a new versioned comparison artifact only after a candidate is proposed.",
+    "Unknown values remain null; no fabricated coverage or eligibility.",
+    "Validate free entitlement and automated-use terms before any retrieval.",
+    "No automatic selection, forecast, scoring, learning or promotion."
+  ],
+  "candidate_template": {
+    "provider_id": null,
+    "endpoint": null,
+    "cost_increment_verified_zero": null,
+    "eligibility": "NOT_VALIDATED",
+    "review_status": "NOT_TESTED",
+    "dimensions": {
+      "historical_depth": {
+        "status": "NOT_TESTED",
+        "value": null,
+        "evidence_refs": [],
+        "checked_at": null,
+        "limitations": []
+      },
+      "freshness": {
+        "status": "NOT_TESTED",
+        "value": null,
+        "evidence_refs": [],
+        "checked_at": null,
+        "limitations": []
+      },
+      "ohlcv": {
+        "status": "NOT_TESTED",
+        "value": null,
+        "evidence_refs": [],
+        "checked_at": null,
+        "limitations": []
+      },
+      "volume": {
+        "status": "NOT_TESTED",
+        "value": null,
+        "evidence_refs": [],
+        "checked_at": null,
+        "limitations": []
+      },
+      "corporate_actions": {
+        "status": "NOT_TESTED",
+        "value": null,
+        "evidence_refs": [],
+        "checked_at": null,
+        "limitations": []
+      },
+      "adjustment_convention": {
+        "status": "NOT_TESTED",
+        "value": null,
+        "evidence_refs": [],
+        "checked_at": null,
+        "limitations": []
+      },
+      "calendar": {
+        "status": "NOT_TESTED",
+        "value": null,
+        "evidence_refs": [],
+        "checked_at": null,
+        "limitations": []
+      },
+      "timestamp_reliability": {
+        "status": "NOT_TESTED",
+        "value": null,
+        "evidence_refs": [],
+        "checked_at": null,
+        "limitations": []
+      },
+      "coverage": {
+        "status": "NOT_TESTED",
+        "value": null,
+        "evidence_refs": [],
+        "checked_at": null,
+        "limitations": []
+      },
+      "stability": {
+        "status": "NOT_TESTED",
+        "value": null,
+        "evidence_refs": [],
+        "checked_at": null,
+        "limitations": []
+      },
+      "terms_automated_use_suitability": {
+        "status": "NOT_TESTED",
+        "value": null,
+        "evidence_refs": [],
+        "checked_at": null,
+        "limitations": []
+      }
+    },
+    "normalized_sample": {
+      "symbol": null,
+      "issuer_id": null,
+      "exchange": null,
+      "currency": null,
+      "timestamp": null,
+      "session_date": null,
+      "open": null,
+      "high": null,
+      "low": null,
+      "close": null,
+      "volume": null,
+      "trading_value": null,
+      "split_factor": null,
+      "dividend": null,
+      "series_type": null,
+      "provider": null,
+      "observation_time": null,
+      "published_time": null,
+      "available_at": null,
+      "forecast_as_of": null,
+      "quality_state": "INSUFFICIENT_DATA"
+    },
+    "series_types": [
+      "RAW_OHLC",
+      "SPLIT_NORMALIZED_OHLC",
+      "TOTAL_RETURN_REFERENCE"
+    ],
+    "total_return_allowed_for_primary_direction": false,
+    "source_snapshot_id": null,
+    "adapter_version": null,
+    "probe_limit": null,
+    "terms_url": null,
+    "terms_review": null,
+    "request_count": 0
+  }
+}

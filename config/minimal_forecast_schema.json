@@ -1,0 +1,346 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Minimal Forecast Record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "record_kind": {
+      "enum": [
+        "SYNTHETIC_TEST",
+        "TRIAL"
+      ]
+    },
+    "forecast_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "forecast_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "config_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "supersedes": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ticker": {
+      "enum": [
+        "6857",
+        "7203",
+        "8306",
+        "1605",
+        "9433",
+        "3197"
+      ]
+    },
+    "session_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "freeze_time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "UP": {
+      "type": "integer",
+      "minimum": 5,
+      "maximum": 95,
+      "multipleOf": 5
+    },
+    "FLAT": {
+      "type": "integer",
+      "minimum": 5,
+      "maximum": 95,
+      "multipleOf": 5
+    },
+    "DOWN": {
+      "type": "integer",
+      "minimum": 5,
+      "maximum": 95,
+      "multipleOf": 5
+    },
+    "most_likely_class": {
+      "enum": [
+        "UP",
+        "FLAT",
+        "DOWN"
+      ]
+    },
+    "confidence": {
+      "enum": [
+        "LOW",
+        "MEDIUM",
+        "HIGH"
+      ]
+    },
+    "threshold": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "unit": {
+          "const": "DECIMAL_RETURN"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "basis": {
+          "const": "OPEN_TO_CLOSE"
+        },
+        "atr_correction_applied": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "value",
+        "unit",
+        "version",
+        "basis",
+        "atr_correction_applied"
+      ]
+    },
+    "top_factors": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "direction": {
+            "enum": [
+              "UP",
+              "FLAT",
+              "DOWN"
+            ]
+          },
+          "evidence_timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "(Z|[+-][0-9]{2}:[0-9]{2})$"
+          },
+          "evidence_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "label",
+          "direction",
+          "evidence_timestamp",
+          "evidence_id"
+        ]
+      }
+    },
+    "snapshot_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "snapshot_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "baseline_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base_rate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "probabilities": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "UP": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "FLAT": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "DOWN": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "required": [
+                "UP",
+                "FLAT",
+                "DOWN"
+              ]
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sample_count": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "probabilities",
+            "version",
+            "sample_count"
+          ]
+        },
+        "momentum": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "probabilities": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "UP": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "FLAT": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "DOWN": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "required": [
+                "UP",
+                "FLAT",
+                "DOWN"
+              ]
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sample_count": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "probabilities",
+            "version",
+            "sample_count"
+          ]
+        },
+        "ma_trend": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "probabilities": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "UP": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "FLAT": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "DOWN": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "required": [
+                "UP",
+                "FLAT",
+                "DOWN"
+              ]
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sample_count": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "probabilities",
+            "version",
+            "sample_count"
+          ]
+        }
+      },
+      "required": [
+        "base_rate",
+        "momentum",
+        "ma_trend"
+      ]
+    },
+    "model_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prompt_version": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "record_kind",
+    "forecast_id",
+    "forecast_version",
+    "config_version",
+    "supersedes",
+    "ticker",
+    "session_date",
+    "freeze_time",
+    "created_at",
+    "UP",
+    "FLAT",
+    "DOWN",
+    "most_likely_class",
+    "confidence",
+    "threshold",
+    "top_factors",
+    "snapshot_id",
+    "snapshot_sha256",
+    "baseline_snapshot",
+    "model_id",
+    "prompt_version"
+  ]
+}

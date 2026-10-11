@@ -1,0 +1,24 @@
+{
+  "version": "market-rules-v1-draft",
+  "specification": "../MASTER_PROMPT.md",
+  "status": "NOT_CONFIGURED",
+  "production": {
+    "approved_rules": [],
+    "weights": null
+  },
+  "shadow": {
+    "cohort_layer_version": "cohort-v1-shadow",
+    "production_influence_enabled": false,
+    "cohorts": [
+      "Fundamental / Long-term",
+      "Expectation / Earnings",
+      "Momentum / Trend",
+      "Herd / Speculative",
+      "Loss-Averse Holder",
+      "Passive / Flow"
+    ],
+    "evidence_required": true,
+    "expectation_gap_enabled_for_design": true,
+    "execution_enabled": false
+  }
+}

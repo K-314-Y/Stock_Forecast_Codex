@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "version": "shock-library-v1",
+  "status": "INSUFFICIENT_DATA",
+  "coverage": "Approximately 20 years of important structured event summaries; older important events permitted",
+  "events": [],
+  "required_event_fields": [
+    "event_id",
+    "type",
+    "start",
+    "end",
+    "regime",
+    "affected_sectors",
+    "affected_companies",
+    "returns_1d_5d_20d_126d",
+    "max_drawdown",
+    "relative_return",
+    "benchmark",
+    "cause",
+    "company_response",
+    "response_date",
+    "outcome",
+    "confidence",
+    "source_refs",
+    "observation_time",
+    "published_time",
+    "available_at",
+    "forecast_as_of"
+  ],
+  "analog_comparison_fields": [
+    "similarities",
+    "differences",
+    "rate_environment",
+    "balance_sheet",
+    "valuation",
+    "business_structure",
+    "policy_environment"
+  ],
+  "detailed_analog_limit": "top 3-5",
+  "policy": "No invented events/returns; not a deterministic prediction; separate from five-year threshold history."
+}

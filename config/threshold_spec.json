@@ -1,0 +1,25 @@
+{
+  "version": "short-oc-p33-v1",
+  "run_mode": "FREE_FORWARD_TRIAL_PREP",
+  "target": "OPEN_TO_CLOSE",
+  "return_formula": "close/open-1",
+  "base": "linear_interpolated_percentile_33_of_abs_daily_open_to_close_returns",
+  "historical_quality_policy": "config/historical_data_quality_policy.json",
+  "training_target_exclusion": "Quarantined rows excluded without repair; exclusion count and dates frozen in candidate metadata",
+  "rolling_volatility_quarantine_rule": "Skip any 21-source-row window containing an invalid row; never bridge across quarantine",
+  "recent_volatility": "sample_stdev_of_latest_20_close_to_close_returns",
+  "normal_volatility": "median_of_training_rolling_20_sample_stdev_close_to_close_returns",
+  "adjustment_trigger": "abs(recent/normal-1)>=0.30",
+  "atr_component": "mean_latest_14_true_ranges_divided_by_latest_close",
+  "adjusted_threshold": "0.5*T_base+0.5*ATR_component",
+  "unadjusted_threshold": "T_base",
+  "class_boundaries": {
+    "UP": "return>=T_final",
+    "DOWN": "return<=-T_final",
+    "FLAT": "-T_final<return<T_final"
+  },
+  "freeze_rule": "Store one version per Core ticker before trial start; no automatic recalculation during 20-30 sessions",
+  "current_values_status": "CANDIDATE_FROZEN_PRETRIAL_NOT_ACTIVATED",
+  "candidate_bundle": "config/trial_thresholds_candidate.json",
+  "invalid_history": "REVIEW_REQUIRED_NO_INTERPOLATION"
+}

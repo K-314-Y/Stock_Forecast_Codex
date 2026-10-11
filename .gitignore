@@ -1,0 +1,104 @@
+# Secrets / local credentials
+.env
+.env.*
+!.env.example
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+credentials/
+secrets/
+.credentials
+.credentials.json
+credentials.json
+secrets.json
+api_key.txt
+api_keys.json
+token.json
+tokens.json
+session.json
+session_token.txt
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+.netrc
+.pypirc
+.aws/
+.ssh/
+.gnupg/
+cookies.txt
+cookies.json
+*.session
+*.session-journal
+
+# Never commit PDFs or raw/runtime market data
+*.[pP][dD][fF]
+data/
+logs/
+state/
+backups/
+exports/
+
+# Large/generated analysis artifacts
+analysis/provider_test_results/
+analysis/jpx_json_listing_only_*/
+analysis/jpx_listing_diagnostic_*/
+analysis/automation/
+
+# Public analysis is opt-in: design only, never acquired samples/results
+/analysis/*
+!/analysis/.keep
+!/analysis/minimal_forward_trial_design_2026-09-15.md
+!/analysis/japan_free_provider_comparison_template_v1_2_2026-09-13.json
+
+# REVIEW_REQUIRED: acquired responses, market-derived values, inline real data
+/config/data_sources.md
+/config/trial_thresholds_candidate.json
+/config/trial_baselines_candidate.json
+/config/trial_baseline_state_tables_candidate.json
+/providers/jp/jpx_manual/test_parser.py
+/tests/test_historical_quality.py
+
+# Local migration package instructions
+/MIGRATION_README.md
+
+# Runtime-only config
+config/runtime_status.json
+
+# Python / tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+cache/
+caches/
+.venv/
+venv/
+
+# Generated artifacts outside the normal storage directories
+/runtime/
+/tmp/
+/temp/
+provider_responses/
+provider_raw/
+provider_samples/
+*.log
+*.bak
+*.backup
+*.tmp
+
+# Local databases / process artifacts
+*.sqlite
+*.sqlite-*
+*.db
+*.pid
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

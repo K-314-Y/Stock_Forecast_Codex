@@ -1,0 +1,20 @@
+{
+  "version": "minimal-baselines-v1",
+  "run_mode": "FREE_FORWARD_TRIAL_PREP",
+  "target": "OPEN_TO_CLOSE",
+  "threshold_reference": "frozen_short_oc_threshold_version",
+  "base_rate": "empirical_UP_FLAT_DOWN_frequency_over_training_rows",
+  "momentum_state": "POSITIVE if prior_completed_close / close_20_sessions_earlier - 1 > 0; NEGATIVE if < 0; FLAT if = 0",
+  "ma_trend_state": "BULL if prior_completed_MA20>MA60; BEAR if <; NEUTRAL if equal",
+  "conditional_training_rule": "state_for_day_i_uses_only_rows_before_i; label_uses_day_i_open_to_close",
+  "minimum_conditional_sample_count": 30,
+  "insufficient_conditional_sample": "fallback_to_base_rate",
+  "historical_quality_policy": "config/historical_data_quality_policy.json",
+  "target_exclusion": "Same quarantined target rows excluded from Base Rate, Momentum, and MA Trend",
+  "conditional_state_window": "Require all 61 preceding observed rows valid; skip conditional sample if any are quarantined",
+  "candidate_bundle": "config/trial_baselines_candidate.json",
+  "candidate_immutability": "CREATE_ONLY_NO_AUTOMATIC_REESTIMATION",
+  "probabilities": "empirical_fraction_in_0_to_1_no_5pp_rounding",
+  "zero_probability_log_loss": "null_with_reason_no_hidden_clipping",
+  "current_values_status": "CANDIDATE_FROZEN_PRETRIAL_NOT_ACTIVATED"
+}

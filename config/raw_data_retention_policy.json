@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "config_version": "2C-1E-2026-09-19",
+  "RETENTION_DAYS": 30,
+  "age_basis": "JST_CALENDAR_DATE_OF_CONFIRMED_DOWNLOAD_NOT_SESSION_DATE_OR_MTIME",
+  "unknown_download_time": "PROTECT",
+  "cleanup_enabled": false,
+  "windows_trash_backend_validated": false,
+  "operation": "MOVE_TO_OS_TRASH_ONLY",
+  "permanent_delete": "USER_ONLY",
+  "direct_delete_fallback": false,
+  "raw_inbox": "data/outcome_input/manual_jpx/",
+  "protected_classes": ["REGRESSION_FIXTURE", "CORPORATE_ACTION_FIXTURE", "PARSER_FAILURE_SAMPLE", "DATA_CONFLICT_SAMPLE", "MANUAL_REVIEW_PENDING", "SCORING_DISCREPANCY", "SCHEMA_MIGRATION_FIXTURE", "USER_KEEP"],
+  "required": ["PARSER_PASS", "CORE6_6_OF_6", "NORMALIZED_OUTPUT_HASH_VERIFIED", "RAW_HASH_VERIFIED", "SCORED_ALL6", "FORECAST_LINKS_ALL6", "NO_DATA_CONFLICT", "NO_PARSER_ERROR", "NO_MANUAL_REVIEW", "NO_UNRESOLVED_CORPORATE_ACTION"],
+  "preserve": ["MANIFEST", "NORMALIZED_JSON", "FORECAST_RECORDS", "SCORING_RECORDS", "SOURCE_METADATA", "APPEND_ONLY_CLEANUP_JOURNAL"],
+  "trash_failure": "REVIEW_REQUIRED_NO_FALLBACK",
+  "crash_after_move": "RECONCILE_JOURNAL_MANUALLY_NO_AUTOMATIC_RETRY",
+  "computer_use_cleanup": false
+}

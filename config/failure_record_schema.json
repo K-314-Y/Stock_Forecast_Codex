@@ -1,0 +1,351 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Minimal Failure Record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "record_kind": {
+      "enum": [
+        "SYNTHETIC_TEST",
+        "TRIAL"
+      ]
+    },
+    "failure_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "forecast_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "forecast_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "score_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ticker": {
+      "enum": [
+        "6857",
+        "7203",
+        "8306",
+        "1605",
+        "9433",
+        "3197"
+      ]
+    },
+    "session_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "prediction": {
+      "enum": [
+        "UP",
+        "FLAT",
+        "DOWN"
+      ]
+    },
+    "actual": {
+      "enum": [
+        "UP",
+        "FLAT",
+        "DOWN"
+      ]
+    },
+    "correctness": {
+      "enum": [
+        "Correct",
+        "Incorrect"
+      ]
+    },
+    "failure_type": {
+      "anyOf": [
+        {
+          "enum": [
+            "FEATURE_OMISSION",
+            "WEIGHTING",
+            "DIRECTION",
+            "TIMING_LAG",
+            "REGIME",
+            "EXPECTATION_GAP",
+            "NEW_INFORMATION",
+            "DATA_QUALITY",
+            "THRESHOLD",
+            "RESIDUAL_UNCERTAINTY",
+            "UNKNOWN"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "diagnosis_basis": {
+      "enum": [
+        "UNDIAGNOSED",
+        "LOCAL_EVIDENCE",
+        "REVIEW_HYPOTHESIS"
+      ]
+    },
+    "trigger_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "HIGH_CONFIDENCE_MISS",
+          "LARGE_BRIER",
+          "RECURRING_TYPE",
+          "BASELINE_WIN_AI_MISS",
+          "DATA_QUALITY_SUSPECTED"
+        ]
+      }
+    },
+    "review_status": {
+      "enum": [
+        "NOT_SELECTED",
+        "CANDIDATE",
+        "DEFERRED_BUDGET",
+        "REVIEWED"
+      ]
+    },
+    "detail": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "available_before_freeze": {
+              "enum": [
+                "YES",
+                "NO",
+                "UNKNOWN"
+              ]
+            },
+            "primary_error": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            "secondary_error": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "new_information_after_freeze": {
+              "enum": [
+                "YES",
+                "NO",
+                null
+              ]
+            },
+            "candidate_improvement": {
+              "type": "string",
+              "maxLength": 400
+            },
+            "confidence_in_failure_diagnosis": {
+              "enum": [
+                "LOW",
+                "MEDIUM",
+                "HIGH",
+                "UNKNOWN"
+              ]
+            },
+            "evidence_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "maxItems": 5
+            },
+            "diagnosis_status": {
+              "const": "HYPOTHESIS_NOT_FACT"
+            }
+          },
+          "required": [
+            "available_before_freeze",
+            "primary_error",
+            "secondary_error",
+            "new_information_after_freeze",
+            "candidate_improvement",
+            "confidence_in_failure_diagnosis",
+            "evidence_ids",
+            "diagnosis_status"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "record_kind",
+    "failure_id",
+    "forecast_id",
+    "forecast_version",
+    "score_id",
+    "ticker",
+    "session_date",
+    "created_at",
+    "prediction",
+    "actual",
+    "correctness",
+    "failure_type",
+    "diagnosis_basis",
+    "trigger_ids",
+    "review_status",
+    "detail"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "correctness": {
+            "const": "Correct"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "failure_type": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "correctness": {
+            "const": "Incorrect"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "failure_type": {
+            "enum": [
+              "FEATURE_OMISSION",
+              "WEIGHTING",
+              "DIRECTION",
+              "TIMING_LAG",
+              "REGIME",
+              "EXPECTATION_GAP",
+              "NEW_INFORMATION",
+              "DATA_QUALITY",
+              "THRESHOLD",
+              "RESIDUAL_UNCERTAINTY",
+              "UNKNOWN"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "review_status": {
+            "const": "REVIEWED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "detail": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "available_before_freeze": {
+                "enum": [
+                  "YES",
+                  "NO",
+                  "UNKNOWN"
+                ]
+              },
+              "primary_error": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 400
+              },
+              "secondary_error": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "new_information_after_freeze": {
+                "enum": [
+                  "YES",
+                  "NO",
+                  null
+                ]
+              },
+              "candidate_improvement": {
+                "type": "string",
+                "maxLength": 400
+              },
+              "confidence_in_failure_diagnosis": {
+                "enum": [
+                  "LOW",
+                  "MEDIUM",
+                  "HIGH",
+                  "UNKNOWN"
+                ]
+              },
+              "evidence_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "maxItems": 5
+              },
+              "diagnosis_status": {
+                "const": "HYPOTHESIS_NOT_FACT"
+              }
+            },
+            "required": [
+              "available_before_freeze",
+              "primary_error",
+              "secondary_error",
+              "new_information_after_freeze",
+              "candidate_improvement",
+              "confidence_in_failure_diagnosis",
+              "evidence_ids",
+              "diagnosis_status"
+            ]
+          },
+          "trigger_ids": {
+            "minItems": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "detail": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

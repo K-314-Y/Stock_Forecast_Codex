@@ -1,0 +1,483 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Minimal Trial Score Record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "record_kind": {
+      "enum": [
+        "SYNTHETIC_TEST",
+        "TRIAL"
+      ]
+    },
+    "score_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "score_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "supersedes": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "forecast_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "forecast_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ticker": {
+      "enum": [
+        "6857",
+        "7203",
+        "8306",
+        "1605",
+        "9433",
+        "3197"
+      ]
+    },
+    "session_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "scored_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "status": {
+      "enum": [
+        "SCORED",
+        "PENDING_DATA",
+        "EXCLUDED_DATA_QUALITY"
+      ]
+    },
+    "actual_open": {
+      "anyOf": [
+        {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "actual_close": {
+      "anyOf": [
+        {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "actual_return": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "actual_class": {
+      "anyOf": [
+        {
+          "enum": [
+            "UP",
+            "FLAT",
+            "DOWN"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "threshold_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ai_score": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "brier": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "accuracy": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "log_loss": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "brier",
+            "accuracy",
+            "log_loss"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "baseline_scores": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "base_rate": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "brier": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2
+                },
+                "accuracy": {
+                  "type": "integer",
+                  "enum": [
+                    0,
+                    1
+                  ]
+                },
+                "log_loss": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "brier",
+                "accuracy",
+                "log_loss"
+              ]
+            },
+            "momentum": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "brier": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2
+                },
+                "accuracy": {
+                  "type": "integer",
+                  "enum": [
+                    0,
+                    1
+                  ]
+                },
+                "log_loss": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "brier",
+                "accuracy",
+                "log_loss"
+              ]
+            },
+            "ma_trend": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "brier": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2
+                },
+                "accuracy": {
+                  "type": "integer",
+                  "enum": [
+                    0,
+                    1
+                  ]
+                },
+                "log_loss": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "brier",
+                "accuracy",
+                "log_loss"
+              ]
+            }
+          },
+          "required": [
+            "base_rate",
+            "momentum",
+            "ma_trend"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "outcome_source": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "provider": {
+              "type": "string",
+              "minLength": 1
+            },
+            "contract_version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "open_semantics": {
+              "const": "OFFICIAL_OPEN"
+            },
+            "close_semantics": {
+              "const": "OFFICIAL_CLOSE"
+            },
+            "series_type": {
+              "enum": [
+                "RAW_OHLC",
+                "SPLIT_NORMALIZED_OHLC"
+              ]
+            },
+            "adjustment_version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "provenance": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "observation_time": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "(Z|[+-][0-9]{2}:[0-9]{2})$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "published_time": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "(Z|[+-][0-9]{2}:[0-9]{2})$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "available_at": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "(Z|[+-][0-9]{2}:[0-9]{2})$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "retrieved_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "(Z|[+-][0-9]{2}:[0-9]{2})$"
+                }
+              },
+              "required": [
+                "source",
+                "observation_time",
+                "published_time",
+                "available_at",
+                "retrieved_at"
+              ]
+            }
+          },
+          "required": [
+            "provider",
+            "contract_version",
+            "open_semantics",
+            "close_semantics",
+            "series_type",
+            "adjustment_version",
+            "provenance"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "record_kind",
+    "score_id",
+    "score_version",
+    "supersedes",
+    "forecast_id",
+    "forecast_version",
+    "ticker",
+    "session_date",
+    "scored_at",
+    "status",
+    "actual_open",
+    "actual_close",
+    "actual_return",
+    "actual_class",
+    "threshold_version",
+    "ai_score",
+    "baseline_scores",
+    "outcome_source",
+    "reason"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "SCORED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "actual_open": {
+            "not": {
+              "type": "null"
+            }
+          },
+          "actual_close": {
+            "not": {
+              "type": "null"
+            }
+          },
+          "actual_return": {
+            "not": {
+              "type": "null"
+            }
+          },
+          "actual_class": {
+            "not": {
+              "type": "null"
+            }
+          },
+          "ai_score": {
+            "not": {
+              "type": "null"
+            }
+          },
+          "baseline_scores": {
+            "not": {
+              "type": "null"
+            }
+          },
+          "outcome_source": {
+            "not": {
+              "type": "null"
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "actual_return": {
+            "type": "null"
+          },
+          "actual_class": {
+            "type": "null"
+          },
+          "ai_score": {
+            "type": "null"
+          },
+          "baseline_scores": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "reason"
+        ]
+      }
+    }
+  ]
+}

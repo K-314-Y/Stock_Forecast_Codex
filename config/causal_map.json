@@ -1,0 +1,20 @@
+{
+  "version": "causal-map-v1",
+  "status": "INSUFFICIENT_DATA",
+  "chains": [],
+  "required_chain": [
+    "Observed Fact",
+    "Direct Mechanism",
+    "Sector Effect",
+    "Company Exposure",
+    "Expected Financial Effect",
+    "Expected Price Horizon"
+  ],
+  "required_metadata": [
+    "causal_distance",
+    "confidence",
+    "expected_lag",
+    "falsification_condition",
+    "evidence_refs"
+  ]
+}

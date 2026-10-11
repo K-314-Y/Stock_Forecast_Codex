@@ -1,0 +1,272 @@
+{
+  "schema_version": "1.2.1",
+  "policy": {
+    "selection": "SINGLE_PRIMARY_CONDITIONAL_FALLBACK",
+    "paid_data_enabled": false,
+    "formal_production_enabled": false,
+    "broker_session_automation_enabled": false,
+    "query_all_providers_each_run": false,
+    "cross_check_triggers": [
+      "PRIMARY_FAILURE",
+      "MISSING_DATA",
+      "STALE_DATA",
+      "ANOMALY",
+      "CORPORATE_ACTION_SUSPECTED",
+      "TIMESTAMP_MISMATCH",
+      "MATERIAL_SOURCE_CONFLICT",
+      "MAJOR_EVENT_VERIFICATION"
+    ],
+    "broker_screen_scraping_enabled": false,
+    "routing_semantics": {
+      "runtime_gates_take_precedence": true,
+      "prep_automatic_retrieval_enabled": false,
+      "always": "Only selected Primary for a needed category in an explicitly authorized run; never query-all or bypass runtime gates.",
+      "conditional": "Primary OFFICIAL_SOURCES: only needed indicators at their refresh cadence. Any fallback: only a listed cross_check_trigger with a recorded reason.",
+      "never": "No automatic use, including unresolved Japan and disabled paid/broker providers.",
+      "eligibility": "Routing role is not data admission. RESEARCH_ONLY/NOT_VALIDATED cannot supply trial or formal forecasts. FALLBACK_ONLY requires separate field-level validation before any forecast use.",
+      "cost": "Existing access is not proof of zero incremental cost. Verify free entitlement before use; no paid enrollment.",
+      "unknown": "Unknown provider, enum, capability or unresolved selection fails closed."
+    }
+  },
+  "categories": {
+    "jp_price_history": {
+      "primary": "AUTO_FREE_UNRESOLVED",
+      "fallback": [],
+      "eligibility_required": [
+        "TRIAL_ELIGIBLE",
+        "FORMAL_ELIGIBLE"
+      ],
+      "status": "UNRESOLVED",
+      "notes": "Free candidate must be validated for depth, freshness, adjustment convention and provenance before trial use.",
+      "formal_provider": null
+    },
+    "jp_fresh_price_state": {
+      "primary": "AUTO_FREE_UNRESOLVED",
+      "fallback": [],
+      "status": "UNRESOLVED",
+      "short_requirement": "latest completed Japan session available before 08:45 JST",
+      "preopen_realtime_required": false,
+      "formal_provider": null
+    },
+    "us_price": {
+      "primary": "ALPACA",
+      "fallback": [
+        "MASSIVE"
+      ],
+      "status": "PARTIAL",
+      "notes": "Alpaca raw daily samples validated; continuity and normalization still require validation. Massive is conditional fallback only."
+    },
+    "fundamentals_consensus_news": {
+      "primary": "BIGDATA",
+      "fallback": [
+        "OFFICIAL_IR_WEB"
+      ],
+      "status": "PARTIAL",
+      "notes": "Current samples validated for Core; historical PIT completeness unproven."
+    },
+    "macro_fx_commodities": {
+      "primary": "OFFICIAL_SOURCES",
+      "fallback": [
+        "ALPHA_VANTAGE"
+      ],
+      "status": "PARTIAL",
+      "notes": "Use official primary data when practical; Alpha Vantage is conditional and quota-limited."
+    },
+    "us_options": {
+      "primary": "ALPACA",
+      "fallback": [
+        "MASSIVE"
+      ],
+      "status": "PARTIAL",
+      "notes": "Use only where entitlement and timestamp quality are verified."
+    }
+  },
+  "providers": {
+    "BIGDATA": {
+      "cost_mode": "EXISTING_ACCESS",
+      "role": [
+        "fundamentals",
+        "earnings",
+        "consensus",
+        "news",
+        "sentiment"
+      ],
+      "eligibility": "RESEARCH_ONLY",
+      "default_query": "ALWAYS",
+      "provider_id": "BIGDATA",
+      "freshness_status": "NOT_VALIDATED",
+      "historical_depth_status": "NOT_VALIDATED",
+      "adjustment_status": "NOT_VALIDATED",
+      "pit_status": "NOT_VALIDATED",
+      "notes": "Phase2A samples exist; field-level PIT and trial admission remain unvalidated. No promotion by cleanup."
+    },
+    "ALPACA": {
+      "cost_mode": "FREE_EXISTING_ACCESS",
+      "role": [
+        "us_price",
+        "us_calendar",
+        "corporate_actions",
+        "us_options"
+      ],
+      "eligibility": "RESEARCH_ONLY",
+      "default_query": "ALWAYS",
+      "provider_id": "ALPACA",
+      "freshness_status": "NOT_VALIDATED",
+      "historical_depth_status": "NOT_VALIDATED",
+      "adjustment_status": "NOT_VALIDATED",
+      "pit_status": "NOT_VALIDATED",
+      "notes": "Raw sample access proved, but continuity and normalization block trial admission. Former TRIAL_ONLY meant candidate, not approved execution."
+    },
+    "MASSIVE": {
+      "cost_mode": "EXISTING_ACCESS",
+      "role": [
+        "us_fallback",
+        "cross_check",
+        "options",
+        "indices"
+      ],
+      "eligibility": "FALLBACK_ONLY",
+      "default_query": "CONDITIONAL",
+      "provider_id": "MASSIVE",
+      "freshness_status": "NOT_VALIDATED",
+      "historical_depth_status": "NOT_VALIDATED",
+      "adjustment_status": "NOT_VALIDATED",
+      "pit_status": "NOT_VALIDATED",
+      "notes": "Conditional fallback role only; capability and zero incremental cost not validated in this project."
+    },
+    "ALPHA_VANTAGE": {
+      "cost_mode": "FREE_LIMITED",
+      "role": [
+        "macro",
+        "fx",
+        "commodities",
+        "selected_estimates",
+        "selected_technicals"
+      ],
+      "eligibility": "RESEARCH_ONLY",
+      "default_query": "CONDITIONAL",
+      "known_limits": [
+        "daily_adjusted_premium_gated_in_phase_2a",
+        "free_request_quota_reached_in_phase_2a"
+      ],
+      "provider_id": "ALPHA_VANTAGE",
+      "freshness_status": "NOT_VALIDATED",
+      "historical_depth_status": "NOT_VALIDATED",
+      "adjustment_status": "NOT_VALIDATED",
+      "pit_status": "NOT_VALIDATED",
+      "notes": "Selected macro/estimate samples exist; quotas and paid adjusted endpoint restriction remain."
+    },
+    "OFFICIAL_SOURCES": {
+      "cost_mode": "FREE",
+      "role": [
+        "exchange_calendars",
+        "macro",
+        "issuer_ir",
+        "material_event_verification"
+      ],
+      "eligibility": "RESEARCH_ONLY",
+      "default_query": "CONDITIONAL",
+      "provider_id": "OFFICIAL_SOURCES",
+      "freshness_status": "NOT_VALIDATED",
+      "historical_depth_status": "NOT_VALIDATED",
+      "adjustment_status": "NOT_VALIDATED",
+      "pit_status": "NOT_VALIDATED",
+      "notes": "Official status alone does not prove endpoint-specific freshness, history or PIT."
+    },
+    "AUTO_FREE_UNRESOLVED": {
+      "cost_mode": "FREE",
+      "role": [
+        "jp_price_candidate"
+      ],
+      "eligibility": "NOT_VALIDATED",
+      "default_query": "NEVER",
+      "provider_id": "AUTO_FREE_UNRESOLVED",
+      "freshness_status": "NOT_VALIDATED",
+      "historical_depth_status": "NOT_VALIDATED",
+      "adjustment_status": "NOT_VALIDATED",
+      "pit_status": "NOT_VALIDATED",
+      "notes": "Placeholder only. Do not auto-select a Japan provider."
+    },
+    "JQUANTS_PAID_FUTURE": {
+      "cost_mode": "PAID_FUTURE_CANDIDATE",
+      "role": [
+        "jp_formal_price_history",
+        "jp_calendar",
+        "corporate_actions"
+      ],
+      "eligibility": "DISABLED",
+      "default_query": "NEVER",
+      "provider_id": "JQUANTS_PAID_FUTURE",
+      "freshness_status": "NOT_VALIDATED",
+      "historical_depth_status": "NOT_VALIDATED",
+      "adjustment_status": "NOT_VALIDATED",
+      "pit_status": "NOT_VALIDATED",
+      "notes": "Future paid candidate only; no current use or enrollment."
+    },
+    "IBKR_TSE_REALTIME_FUTURE": {
+      "cost_mode": "PAID_FUTURE_CANDIDATE",
+      "role": [
+        "jp_preopen_realtime_shadow_feature"
+      ],
+      "eligibility": "DISABLED",
+      "default_query": "NEVER",
+      "provider_id": "IBKR_TSE_REALTIME_FUTURE",
+      "freshness_status": "NOT_VALIDATED",
+      "historical_depth_status": "NOT_VALIDATED",
+      "adjustment_status": "NOT_VALIDATED",
+      "pit_status": "NOT_VALIDATED",
+      "notes": "Future paid Shadow candidate only; no current use or enrollment."
+    },
+    "BROKER_LOGGED_IN_SESSION": {
+      "cost_mode": "N/A",
+      "role": [],
+      "eligibility": "DISABLED",
+      "default_query": "NEVER",
+      "reason": "Security, reliability and terms-risk; not used as routine automated market-data pipeline.",
+      "provider_id": "BROKER_LOGGED_IN_SESSION",
+      "freshness_status": "NOT_VALIDATED",
+      "historical_depth_status": "NOT_VALIDATED",
+      "adjustment_status": "NOT_VALIDATED",
+      "pit_status": "NOT_VALIDATED",
+      "notes": "No broker login, session, screen scraping or account automation for acquisition."
+    },
+    "OFFICIAL_IR_WEB": {
+      "provider_id": "OFFICIAL_IR_WEB",
+      "role": [
+        "issuer_ir",
+        "official_earnings_releases",
+        "guidance",
+        "material_company_disclosures",
+        "major_event_verification"
+      ],
+      "cost_mode": "FREE",
+      "eligibility": "RESEARCH_ONLY",
+      "default_query": "CONDITIONAL",
+      "freshness_status": "NOT_VALIDATED",
+      "historical_depth_status": "NOT_VALIDATED",
+      "adjustment_status": "NOT_VALIDATED",
+      "pit_status": "NOT_VALIDATED",
+      "notes": "Issuer/source-specific verification required. Conditional company fallback, never normal news Primary."
+    }
+  },
+  "cohort_policy": {
+    "shared_snapshot_required": true,
+    "independent_provider_search_per_cohort": false
+  },
+  "freshness": {
+    "jp_short_free_trial": {
+      "freeze": "08:45 Asia/Tokyo",
+      "price": "latest_completed_japan_session",
+      "news_and_events": "available_at_or_before_freeze",
+      "preopen_realtime": "optional_future_shadow_only"
+    },
+    "us_short": {
+      "freeze": "regular_open_minus_15_minutes",
+      "price_and_news": "latest_available_before_freeze",
+      "limited_feed_must_be_labeled": true
+    }
+  },
+  "config_version": "v1.2-cleanup-2026-09-13",
+  "updated_at": "2026-09-12T22:20:23.8185530Z",
+  "run_mode": "FREE_FORWARD_TRIAL_PREP"
+}

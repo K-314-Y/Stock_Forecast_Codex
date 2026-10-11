@@ -1,0 +1,262 @@
+{
+  "schema_version": "1.0",
+  "config_version": "minimal-live-gap-reduction-candidate-2026-09-26",
+  "previous_config_version": "minimal-jpx-manual-candidate-2026-09-16",
+  "earlier_config_versions": [
+    "minimal-design-2026-09-15",
+    "minimal-outcome-gate-2026-09-15"
+  ],
+  "OUTCOME_SCORING_SOURCE_VALIDATED": false,
+  "outcome_source_gate_rule": "Fail closed unless Core6, Open/Close semantics, corporate actions, session mapping, TERMS_OK, ZERO_ADDITIONAL_COST and browser-assisted acquisition rights all pass. One-shot technical success is not source admission or Trial authorization.",
+  "manual_jpx_policy": {
+    "provider": "JPX_DAILY_REPORT",
+    "eligibility": "NOT_VALIDATED",
+    "acquisition": "BROWSER_ASSISTED_SINGLE_FILE",
+    "browser_actor": "CHATGPT_DESKTOP_BUILT_IN_BROWSER",
+    "human_manual_download": "SUPPORTED_FALLBACK",
+    "web_auto_bulk_fetch": "DISABLED",
+    "WEB_AUTO_DOWNLOAD": "DISABLED",
+    "local_parse": "ENABLED",
+    "local_parse_meaning": "Offline parser tested on one human and one browser-assisted PDF; source admission and scoring execution remain disabled",
+    "parser_status": "PASS_ONE_SHOT",
+    "parser_version": "jpx-local-0.2.1",
+    "validated_sample_session": "2026-09-18",
+    "corporate_action_status": "UNKNOWN",
+    "inbox": "data/outcome_input/manual_jpx/",
+    "output_directory": "data/outcome_parsed/jpx/",
+    "raw_original_immutable": true,
+    "series": "RAW_OFFICIAL_DAILY_OHLC_CANDIDATE",
+    "publication_lag": "NEXT_BUSINESS_DAY",
+    "publication_lag_verification": "USER_PROVIDED_NOT_INDEPENDENTLY_VERIFIED",
+    "cost": "ZERO_ADDITIONAL_COST",
+    "cost_status": "UNVERIFIED",
+    "cost_basis": "Requested zero-cost policy; current official conditions not independently verified",
+    "terms_status": "TERMS_UNCLEAR",
+    "scoring_llm_calls_budget": 0,
+    "procedure": "../providers/jp/jpx_manual/README.md"
+  },
+  "run_mode": "FREE_FORWARD_TRIAL_PREP",
+  "mode_name": "MINIMAL_FORWARD_TRIAL",
+  "mode_kind": "INACTIVE_EXECUTION_PROFILE_NOT_NEW_LIFECYCLE_STAGE",
+  "enabled": false,
+  "future_activation": "Human-approved FREE_FORWARD_TRIAL with this profile, after blockers close; never Formal Production",
+  "scope": {
+    "market": "Japan",
+    "core_version": "core-v1",
+    "tickers": [
+      "6857",
+      "7203",
+      "8306",
+      "1605",
+      "9433",
+      "3197"
+    ],
+    "companies": [
+      "Advantest",
+      "Toyota Motor",
+      "Mitsubishi UFJ Financial Group",
+      "INPEX",
+      "KDDI",
+      "Skylark Holdings"
+    ],
+    "horizons": [
+      "Short"
+    ],
+    "target": "FORECAST_DAY_OPEN_TO_CLOSE",
+    "classes": [
+      "UP",
+      "FLAT",
+      "DOWN"
+    ],
+    "trial_sessions_guideline": [
+      20,
+      30
+    ],
+    "planned_session_count": null,
+    "early_stopping_for_performance": false,
+    "freeze_time": "08:45:00",
+    "timezone": "Asia/Tokyo"
+  },
+  "gates": {
+    "rotation_enabled": false,
+    "medium_enabled": false,
+    "long_enabled": false,
+    "investor_cohort_retrieval_enabled": false,
+    "historical_shock_retrieval_enabled": false,
+    "automatic_learning_enabled": false,
+    "automatic_promotion_enabled": false,
+    "schedules_enabled": false,
+    "paid_provider_auto_use_enabled": false,
+    "broker_automation_enabled": false,
+    "formal_forecast_enabled": false,
+    "forward_trial_enabled": false,
+    "forecast_execution_enabled": false,
+    "outcome_scoring_execution_enabled": false,
+    "failure_review_execution_enabled": false,
+    "late_research_diagnostic_enabled": true
+  },
+  "inputs": {
+    "policy": "CANDIDATES_ONLY_NOT_CURRENTLY_ADMITTED",
+    "stock_candidates": [
+      "return_1d",
+      "return_5d",
+      "momentum_20d",
+      "momentum_60d",
+      "realized_volatility_20d",
+      "ma20_ma60_state",
+      "stock_class_threshold"
+    ],
+    "optional": [
+      "sector_relative_strength_if_already_available"
+    ],
+    "market_common": [
+      "japan_previous_market_move",
+      "sp500_overnight",
+      "nasdaq_overnight",
+      "usdjpy_move",
+      "major_rate_move",
+      "materially_relevant_commodity_move"
+    ],
+    "missing_policy": "null plus reason; required price/threshold/baseline/PIT gaps cause SKIP, no prediction",
+    "feature_formula_version": "minimal-feature-v1-engine-test-only",
+    "live_feature_spec": "config/minimal_live_feature_spec.json",
+    "live_atr14_pct": "REMOVED",
+    "live_volume_ratio_20d": "REMOVED",
+    "snapshot_shared": true
+  },
+  "forecast": {
+    "normal_llm_requests_max": 1,
+    "stocks_per_request": 6,
+    "search_tools_in_forecast_call": false,
+    "probability_step_percentage_points": 5,
+    "probability_bounds": [
+      5,
+      95
+    ],
+    "probability_sum": 100,
+    "top_factors_max": 3,
+    "tie_break_order": [
+      "FLAT",
+      "UP",
+      "DOWN"
+    ],
+    "confidence_rule": "HIGH if max>=60; MEDIUM if max>=45; else LOW; not calibrated certainty",
+    "validation_retry_llm_calls": 0,
+    "invalid_output": "Reject batch; no post-freeze retry or probability repair",
+    "immutable": true,
+    "corrections": "Append new version; post-freeze corrections never replace frozen evaluation entry"
+  },
+  "baselines": {
+    "count": 3,
+    "ids": [
+      "base_rate",
+      "momentum",
+      "ma_trend"
+    ],
+    "lookback_years": 5,
+    "target": "OPEN_TO_CLOSE",
+    "definition_source": "MASTER_PROMPT.md sections 9,19,20",
+    "conditional_state_parameters": "config/baseline_spec.json",
+    "min_conditional_sample_count": 30,
+    "smoothing_policy": "NONE_EMPIRICAL",
+    "threshold_boundary_policy": "UP if r>=t; DOWN if r<=-t; otherwise FLAT (equal boundary directional)",
+    "freeze_with_forecast": true,
+    "probability_units": "AI percentage points; baseline empirical probabilities in [0,1], not rounded to 5-point bins",
+    "parameters_status": "UNRESOLVED_START_BLOCKER"
+  },
+  "scoring": {
+    "engine": "LOCAL_CODE_ENGINE_TEST_ONLY",
+    "llm_calls": 0,
+    "news_calls": 0,
+    "brier": "sum((p_k/100 - one_hot_k)^2), no division by 3",
+    "accuracy": "argmax class equals actual class",
+    "log_loss": "-ln(p_actual/100); optional, zero baseline probability => null with reason, no hidden clipping",
+    "same_forecast_set_comparison": true,
+    "missing_outcome": "PENDING_DATA; score null",
+    "price_contract": "price_source_contract.md",
+    "implementation_status": "ENGINE_TEST_ONLY_REAL_TRIAL_GATES_DISABLED"
+  },
+  "failure_review": {
+    "default_miss_type": "UNKNOWN",
+    "policy": "failure_review_policy.md",
+    "high_confidence_probability_min": 60,
+    "large_brier_min": 1,
+    "recurrence_count_min": 3,
+    "recurrence_window_sessions": 5,
+    "baseline_brier_gap_min": 0.25,
+    "weekly_llm_review_calls_max": 1,
+    "weekly_records_max": 3,
+    "per_record_output_token_target": [
+      100,
+      300
+    ],
+    "automatic_execution": false
+  },
+  "budgets": {
+    "historical_raw_rows_into_llm": 0,
+    "news_items_per_stock_max": 3,
+    "news_items_per_run_max": 18,
+    "historical_analog_searches": 0,
+    "cohort_independent_searches": 0,
+    "normal_cross_checks": 0,
+    "cross_check_triggers": [
+      "missing",
+      "stale",
+      "anomaly",
+      "data_conflict",
+      "corporate_action_suspicion"
+    ],
+    "market_fetch_once_per_category": true,
+    "provider_call_cap": null,
+    "unknown_provider_cost_blocks_auto_use": true,
+    "normal_news_detail_calls_max": 0,
+    "material_event_detail_calls_per_run_max": 2,
+    "exception_approval_required": true,
+    "policy": "token_budget.md"
+  },
+  "heavy_features": {
+    "investor_cohort_full_analysis": "DISABLED_FOR_MINIMAL_TRIAL",
+    "historical_shock_library_retrieval": "DISABLED_FOR_MINIMAL_TRIAL",
+    "historical_analog_top3_5": "DISABLED_FOR_MINIMAL_TRIAL",
+    "long_form_decision_trace": "DISABLED_FOR_MINIMAL_TRIAL",
+    "broad_web_research": "DISABLED_FOR_MINIMAL_TRIAL",
+    "independent_ticker_agents": "DISABLED_FOR_MINIMAL_TRIAL",
+    "rotation_universe_100_100": "DISABLED_FOR_MINIMAL_TRIAL",
+    "medium_daily_evaluation": "DISABLED_FOR_MINIMAL_TRIAL",
+    "long_daily_evaluation": "DISABLED_FOR_MINIMAL_TRIAL"
+  },
+  "data_blockers": [
+    "BIGDATA_JP_PRICE_SEMANTICS",
+    "RAW_ADJUSTED_DEFINITION",
+    "JP_OUTCOME_OPEN_CLOSE_SOURCE",
+    "YFINANCE_TERMS_ELIGIBILITY",
+    "US_CONTINUITY_ADJUSTMENT",
+    "MATURITY_CONVENTION",
+    "ZERO_INCREMENTAL_COST",
+    "MUFG_HISTORICAL_OHLC_CONFLICT"
+  ],
+  "start_blockers": [
+    "ROLE_PRICE_CONTRACT",
+    "FEATURE_FORMULAS",
+    "BASELINE_PARAMETERS",
+    "THRESHOLD_IMPLEMENTATION_DETAILS",
+    "TRIAL_DURATION_PREREGISTRATION",
+    "IMMUTABLE_WRITER_AND_SCORER",
+    "LLM_BATCH_AND_PIT_GATE_TESTS",
+    "APPROVED_PROVIDER_REQUEST_PLAN",
+    "HUMAN_START_APPROVAL"
+  ],
+  "reduction_vs_full": "QUALITATIVE ONLY",
+  "late_research_diagnostic": {
+    "status": "ENABLED_RESEARCH_ONLY",
+    "engine": "engine/late_research.py",
+    "allowed_after_freeze": true,
+    "actual_run_time_must_be_preserved": true,
+    "admissible_evidence_cutoff": "08:45:00 Asia/Tokyo",
+    "formal_forecast_eligible": false,
+    "forward_trial_eligible": false,
+    "scoring_eligible": false,
+    "prediction_log_eligible": false,
+    "purpose": "Exercise the research forecast path after 08:45 without backdating or contaminating formal/trial evaluation."
+  }
+}
