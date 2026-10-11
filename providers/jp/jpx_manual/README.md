@@ -1,5 +1,28 @@
 # JPX手動取得経路のローカル処理設計
 
+## Historical DirectのSTOP / Retry / Resume v2（2026-10-11）
+
+Historical Directだけ[確定Policy v2](../../../config/operation_policy_v2.md)へ移行。
+`acquire_one`とJSON diagnosticは未解除HARD/host/global STOPを共有し、既知の局所metadata/format failureだけSOFTへ分類する。
+未知の旧`STOP.json`は`HARD_STOP_LEGACY_UNCLASSIFIED`。旧本文・Raw・失敗attemptは不変で保持する。
+current STOP summaryは`current_stops_v2.json`、追加STOP/RESUMED証跡は`stops_v2/`。
+
+`run_state=historical_direct.RunState()`を同一runで共有すると、listing/JSON/PDFを通したsession別retry予算が最大2回となる。
+予算はrun IDごとに保存し、再開でも引き継ぐ。403/challengeはretry 0。
+429再試行も429ならPolicy 4節に従い、その時点でhost停止。Retry-Afterは尊重する。
+transient上限はsession SKIP。同日の同一session再呼出しは保存済みSKIPを返し、run ID変更で連続retryしない。
+公式JSONのoctet-streamはdecode/schema/provenance PASS後にContent-Type WARNを保存する。
+
+SOFT resumeは`resolution=<JSON path>`を渡す。resolutionには`stop_reference`（path/sha256）、`scope`、`target`、
+`root_cause`、`scope_isolation=PASS`、現在の修正code/configを指す`fix_refs`、`validation_refs`、旧STOPと同じ`evidence_refs`が必要。
+validation reportは`status=PASS`、`checks={fixture: PASS, regression: PASS}`と同じ`fix_refs`を持つ。
+各参照は`historical_policy_v2.reference(path)`のpath/sha256形式。PASS表記だけでは解除せず、保存済み公式リンク・Raw hash・PDF・実parser・既存validatorをoffline再検証する。
+RESUMEDをdurable保存できた場合だけ解除し、別attemptに結果を保存する。Rawの再downloadや旧attemptの上書きはしない。
+
+有効な既存bundle/Manifestは再検証してrequest 0。証拠が未確認の既存ファイルも再取得せず`EXISTING_LOCAL_REQUIRES_VALIDATION`を返す。
+Partial tickerは`DEFERRED_PARTIAL_TICKER`（Task 7C/7D）。全6件必須schemaとconsumerの移行を別変更に分離する。
+通常Browser経路・Forecast engine・登録gateは今回の移行対象外。以下の旧手順は履歴として保持する。
+
 ## Historical Direct限定例外（2026-10-08）
 
 `historical_direct.acquire_one(root, session, transport=...)` は1 Session限定の取得adapter。

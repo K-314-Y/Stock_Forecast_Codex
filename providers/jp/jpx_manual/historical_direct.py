@@ -1,6 +1,6 @@
 """Explicit one-session historical acquisition, never Fresh/Forecast/Outcome.
 
-No CLI, scheduler, bulk operation, retry, or implicit network transport.
+No CLI, scheduler, bulk operation, or implicit network transport.
 Call acquire_one(root, session, transport=HTTPS()) only for an authorized live
 operation. Tests inject a transport with no network. Each request is a single
 GET; redirects are checked before following and bounded separately from retries.
@@ -17,6 +17,12 @@ import os
 from pathlib import Path
 import re
 import ssl
+import socket
+import errno
+import time
+import tempfile
+from email.utils import parsedate_to_datetime
+from uuid import uuid4
 from urllib.parse import unquote, urljoin, urlsplit
 
 from pypdf import PdfReader
@@ -24,14 +30,17 @@ from engine import minimal_trial as core
 from engine import official_gap as gap
 from engine import one_session_dry_run as frozen
 from providers.jp.jpx_manual import parser
+from providers.jp.jpx_manual import historical_policy_v2 as lifecycle
 
 METHOD = parser.DIRECT_METHOD
 LISTING = 'https://www.jpx.co.jp/markets/statistics-equities/daily/'
 HOSTS = {'www.jpx.co.jp', 'jpx.co.jp'}
-STOP_STATUSES = {403: 'HTTP_403', 429: 'RATE_LIMIT'}
+STOP_STATUSES = {401: 'AUTHENTICATION_CHALLENGE', 403: 'HTTP_403', 429: 'RATE_LIMIT'}
 CHALLENGE = re.compile(r'captcha|access\s*denied|security\s*challenge|'
                        r'verify.{0,30}(human|browser)|checking\s+your\s+browser|'
                        r'just\s+a\s+moment|cloudflare\s+ray|アクセス.{0,8}(拒否|制限)|'
+                       r'bot\s*challenge|auth(?:entication)?\s*(challenge|required)|login\s*required|'
+                       r'sign[\s-]*in\s*(required|to\s+continue)|'
                        r'ロボットではない|セキュリティ.{0,8}(チェック|確認)', re.I)
 
 
@@ -86,7 +95,16 @@ class HTTPS:
             pairs = response.getheaders()
             if len({k.lower() for k, _ in pairs}) != len(pairs):
                 raise ValueError('AMBIGUOUS_HTTP_HEADER')
-            body = response.read(limit + 1)
+            try:
+                body = response.read(limit + 1)
+            except (OSError, http.client.HTTPException) as error:
+                partial = getattr(error, 'partial', b'')
+                # A body-read failure cannot erase a known restriction status.
+                if response.status in (401, 403, 429):
+                    return Response(url, response.status, dict(pairs), partial)
+                if CHALLENGE.search(partial[:65536].decode('utf-8', errors='replace')):
+                    raise ValueError('SECURITY_CHALLENGE') from error
+                raise
             if len(body) > limit:
                 raise ValueError('RESPONSE_TOO_LARGE')
             return Response(url, response.status, dict(pairs), body)
@@ -94,22 +112,179 @@ class HTTPS:
             connection.close()
 
 
-def _request(transport, url, limit, max_redirects, chain=(), seen=()):
+@dataclass
+class RunState:
+    """One serialized catch-up run; budget covers listing, JSON and PDF together."""
+    run_id: str = field(default_factory=lambda: uuid4().hex)
+    retries: dict = field(default_factory=dict)
+    blocked_hosts: dict = field(default_factory=dict)
+    rate_limited_hosts: set = field(default_factory=set)
+    exhausted: set = field(default_factory=set)
+    store: Path | None = None
+
+    def bind(self, store):
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', self.run_id):
+            raise ValueError('INVALID_HISTORICAL_RUN_ID')
+        store = Path(store).resolve()
+        if self.store is not None and self.store != store:
+            raise ValueError('RUN_STORE_MISMATCH')
+        self.store = store
+        path = self.store / 'runs_v2' / (self.run_id + '.json')
+        if path.exists():
+            data = json.loads(path.read_bytes())
+            if hashlib.sha256(core.canonical_bytes(data['index'])).hexdigest() != data['sha256']:
+                raise ValueError('RUN_STATE_HASH_CONFLICT')
+            self.retries = data['index']['retries']
+            self.blocked_hosts = data['index']['blocked_hosts']
+            self.rate_limited_hosts = set(data['index']['rate_limited_hosts'])
+            self.exhausted = set(data['index'].get('exhausted', []))
+        if (not isinstance(self.retries, dict) or any(type(count) is not int or not 0 <= count <= 2
+                                                    for count in self.retries.values())):
+            raise ValueError('INVALID_RETRY_BUDGET')
+
+    def save(self):
+        if self.store is None:
+            return
+        folder = self.store / 'runs_v2'
+        folder.mkdir(exist_ok=True)
+        state = dict(retries=self.retries, blocked_hosts=self.blocked_hosts,
+                     rate_limited_hosts=sorted(self.rate_limited_hosts), exhausted=sorted(self.exhausted))
+        lifecycle.write_current(folder / (self.run_id + '.json'), state)
+
+
+@dataclass
+class RequestContext:
+    run: RunState = field(default_factory=RunState)
+    session: str = 'REQUEST'
+    folder: Path | None = None
+    count: int = 0
+    warnings: list = field(default_factory=list)
+
+    def capture(self, metadata, body=None):
+        self.count += 1
+        if self.folder is not None:
+            name = 'request-' + str(self.count).zfill(4)
+            if body is not None:
+                with (self.folder / (name + '.body')).open('xb') as stream:
+                    stream.write(body)
+            frozen._seal(self.folder / (name + '.json'), metadata)
+
+    def retry(self, response=None):
+        count = self.run.retries.get(self.session, 0)
+        if type(count) is not int or not 0 <= count <= 2:
+            raise ValueError('INVALID_RETRY_BUDGET')
+        if count >= 2:
+            self.run.exhausted.add(self.session)
+            self.run.save()
+            raise ValueError('RETRY_EXHAUSTED')
+        delay = 0
+        if response is not None:
+            value = response.header('retry-after')
+            if value is None:
+                delay = 1
+            elif re.fullmatch(r'\d+', value.strip()):
+                delay = int(value.strip())
+            else:
+                try:
+                    when = parsedate_to_datetime(value)
+                    if when.tzinfo is None:
+                        raise ValueError('RETRY_AFTER_INVALID')
+                    delay = max(0, (when - _now()).total_seconds())
+                except (ValueError, TypeError, OverflowError) as error:
+                    raise ValueError('RETRY_AFTER_INVALID') from error
+        self.run.retries[self.session] = count + 1
+        self.run.save()  # Reserve before sleeping/requesting; interruption cannot reset it.
+        if self.folder is not None:
+            frozen._seal(self.folder / ('retry-' + str(count + 1) + '.json'),
+                         dict(state='RETRY', target=self.session, retry_count=count + 1,
+                              trigger='HTTP_429' if response is not None else 'TRANSIENT_TRANSPORT',
+                              retried_at=_now().isoformat(), run_id=self.run.run_id,
+                              final_result_references=[str(self.folder / 'result.json'), str(self.folder / 'failure.json')]))
+        if delay:
+            time.sleep(delay)
+
+
+def _transient(error):
+    return (isinstance(error, (TimeoutError, ConnectionError, http.client.RemoteDisconnected,
+                              http.client.IncompleteRead))
+            or isinstance(error, socket.gaierror) and error.errno == socket.EAI_AGAIN
+            or isinstance(error, OSError) and error.errno in
+            {errno.ETIMEDOUT, errno.ECONNRESET, errno.ECONNABORTED, errno.EPIPE,
+             errno.ENETUNREACH, errno.EHOSTUNREACH})
+
+
+def _challenge(response):
+    if response.body.startswith(b'%PDF-'):
+        return False
+    text = response.body[:65536].decode('utf-8', errors='replace')
+    if response.content_type() != 'text/html' or response.status != 200:
+        return bool(CHALLENGE.search(text))
+    # Ordinary descriptive text is not a challenge. Inspect challenge controls/headings.
+    controls = re.findall(r'<(?:title|h1|form|iframe)\b[^>]*>.*?</(?:title|h1|form|iframe)>', text, re.I | re.S)
+    return any(CHALLENGE.search(value) for value in controls)
+
+
+def _request(transport, url, limit, max_redirects, chain=(), seen=(), *, context=None):
+    context = context or RequestContext()
     official_url(url)  # Validate BEFORE contacting even a redirect destination.
     if url in seen:
         raise ValueError('REDIRECT_CYCLE')
-    start = _now()
-    response = transport.get(url, limit=limit)
-    end = _now()
-    if start.tzinfo is None or end.tzinfo is None or end < start:
-        raise ValueError('ACQUISITION_CLOCK_INVALID')
-    if response.url != url:
-        raise ValueError('TRANSPORT_FOLLOWED_REDIRECT_WITHOUT_CHECK')
-    if len(response.body) > limit:
-        raise ValueError('RESPONSE_TOO_LARGE')
-    metadata = dict(url=url, started_at=start.isoformat(), completed_at=end.isoformat(),
-                    status=response.status, content_type=response.content_type(),
-                    headers=response.headers, response_sha256=hashlib.sha256(response.body).hexdigest())
+    host = 'jpx.co.jp'  # Both official names share the same restriction boundary.
+    while True:
+        if host in context.run.blocked_hosts:
+            raise ValueError('HARD_STOP_ACTIVE:' + context.run.blocked_hosts[host])
+        if context.session in context.run.exhausted:
+            raise ValueError('RETRY_EXHAUSTED')
+        start = _now()
+        try:
+            response = transport.get(url, limit=limit)
+        except Exception as error:
+            end = _now()
+            partial = getattr(error, 'partial', getattr(error.__cause__, 'partial', None))
+            context.capture(dict(url=url, started_at=start.isoformat(), completed_at=end.isoformat(),
+                                 result=type(error).__name__, reason=str(error),
+                                 partial_sha256=hashlib.sha256(partial).hexdigest() if partial is not None else None), partial)
+            if start.tzinfo is None or end.tzinfo is None or end < start:
+                raise ValueError('ACQUISITION_CLOCK_INVALID') from error
+            if not _transient(error):
+                raise
+            context.retry()
+            continue
+        end = _now()
+        metadata = dict(url=url, started_at=start.isoformat(), completed_at=end.isoformat(),
+                        response_url=response.url, status=response.status, content_type=response.content_type(),
+                        headers=response.headers, response_sha256=hashlib.sha256(response.body).hexdigest())
+        context.capture(metadata, response.body)
+        if start.tzinfo is None or end.tzinfo is None or end < start:
+            raise ValueError('ACQUISITION_CLOCK_INVALID')
+        if response.url != url:
+            context.run.blocked_hosts[host] = 'TRANSPORT_FOLLOWED_REDIRECT_WITHOUT_CHECK'
+            context.run.save()
+            raise ValueError('TRANSPORT_FOLLOWED_REDIRECT_WITHOUT_CHECK')
+        if len(response.body) > limit:
+            raise ValueError('RESPONSE_TOO_LARGE')
+        security = (STOP_STATUSES[response.status] if response.status in (401, 403)
+                    else 'SECURITY_CHALLENGE' if _challenge(response) else None)
+        if security:
+            context.run.blocked_hosts[host] = security
+            context.run.save()
+            raise ValueError(security)
+        if response.status != 429:
+            break
+        if host in context.run.rate_limited_hosts:
+            context.run.blocked_hosts[host] = 'HOST_PERSISTENT_429'
+            context.run.save()
+            raise ValueError('HOST_PERSISTENT_429')
+        context.run.rate_limited_hosts.add(host)
+        context.run.save()
+        try:
+            context.retry(response)
+        except ValueError as error:
+            if str(error) == 'RETRY_EXHAUSTED':
+                context.run.blocked_hosts[host] = 'HOST_PERSISTENT_429'
+                context.run.save()
+                raise ValueError('HOST_PERSISTENT_429') from error
+            raise
     chain = (*chain, metadata)
     if response.status in STOP_STATUSES:
         raise ValueError(STOP_STATUSES[response.status])
@@ -119,8 +294,13 @@ def _request(transport, url, limit, max_redirects, chain=(), seen=()):
         location = response.header('location')
         if not location or len(chain) > max_redirects:
             raise ValueError('REDIRECT_LIMIT_OR_LOCATION_INVALID')
-        target = official_url(urljoin(url, location))
-        return _request(transport, target, limit, max_redirects, chain, (*seen, url))
+        try:
+            target = official_url(urljoin(url, location))
+        except ValueError:
+            context.run.blocked_hosts[host] = 'NON_OFFICIAL_HTTPS_URL'
+            context.run.save()
+            raise
+        return _request(transport, target, limit, max_redirects, chain, (*seen, url), context=context)
     if response.status != 200:
         raise ValueError('UNEXPECTED_HTTP_STATUS:' + str(response.status))
     if response.header('content-encoding') not in (None, 'identity'):
@@ -277,7 +457,7 @@ def json_endpoints(response):
     return candidates[0]
 
 
-def _json_response(response):
+def _json_response(response, warnings=None):
     official_url(response.url)
     if response.status in STOP_STATUSES:
         raise ValueError(STOP_STATUSES[response.status])
@@ -286,7 +466,7 @@ def _json_response(response):
     kind = response.content_type()
     # JPX's observed official JSON objects are served by S3 with this MIME.
     valid_type = kind in ('application/json', 'text/json') or (
-        kind == 'binary/octet-stream' and urlsplit(response.url).path.endswith('.json'))
+        kind in ('binary/octet-stream', 'application/octet-stream') and urlsplit(response.url).path.endswith('.json'))
     if response.status != 200 or not valid_type:
         raise ValueError('UNEXPECTED_JSON_RESPONSE')
     def pairs(items):
@@ -303,11 +483,14 @@ def _json_response(response):
         raise ValueError('JSON_DECODE_FAILED') from e
     if not isinstance(data, dict) or not isinstance(data.get('TableDatas'), list):
         raise ValueError('JSON_SCHEMA_MISMATCH')
+    if warnings is not None and kind not in ('application/json', 'text/json'):
+        warnings.append(dict(state='WARN', code='CONTENT_TYPE_MISMATCH', target=response.url,
+                             action='CONTINUE_AFTER_VALIDATION', content_type=kind))
     return data['TableDatas']
 
 
-def monthly_json_url(response, discovery, session):
-    rows = _json_response(response)
+def monthly_json_url(response, discovery, session, *, warnings=None):
+    rows = _json_response(response, warnings)
     months = []
     for row in rows:
         if not isinstance(row, dict) or not isinstance(row.get('Month'), str) or not re.fullmatch(r'\d{4}(0[1-9]|1[0-2])', row['Month']):
@@ -324,8 +507,8 @@ def monthly_json_url(response, discovery, session):
     return official_url(urljoin(discovery['base_url'], reference))
 
 
-def json_stock_link(response, session):
-    rows = _json_response(response)
+def json_stock_link(response, session, *, warnings=None):
+    rows = _json_response(response, warnings)
     matches = []
     for row in rows:
         if not isinstance(row, dict) or not isinstance(row.get('TradeDate'), str) or 'Stocks' not in row:
@@ -353,8 +536,33 @@ def json_stock_link(response, session):
                 exact_href=value, resolved_pdf_url=url)
 
 
-def discover_json_one(root, session, *, transport, evidence_folder, _listing=None):
-    """Explicit listing/JSON-only diagnostic. Does not clear/bypass STOP for PDFs."""
+def discover_json_one(root, session, *, transport, evidence_folder, _listing=None, _context=None, run_state=None):
+    """Explicit JSON diagnostic, subject to the same STOP and host/retry boundary."""
+    if _context is not None:
+        return _discover_json(root, session, transport=transport, evidence_folder=evidence_folder,
+                              _listing=_listing, context=_context)
+    store = Path(root).resolve() / 'data/jpx_historical_direct'
+    with frozen._locked(store):
+        stops = lifecycle.Stops(store)
+        stops.gate(session)
+        run = run_state or RunState()
+        run.bind(store)
+        context = RequestContext(run, session, Path(evidence_folder))
+        try:
+            return _discover_json(root, session, transport=transport, evidence_folder=evidence_folder,
+                                  _listing=_listing, context=context)
+        except FileExistsError:
+            raise
+        except Exception as error:
+            if str(error) != 'RETRY_EXHAUSTED':
+                failure = Path(evidence_folder) / 'failure.json'
+                refs = [lifecycle.reference(failure)] if failure.is_file() else []
+                stops.stop(str(error), session, evidence_refs=refs, last_success=None,
+                           run_id=run.run_id, retry_count=run.retries.get(session, 0))
+            raise
+
+
+def _discover_json(root, session, *, transport, evidence_folder, _listing, context):
     root = Path(root).resolve()
     policy, policy_hash = _policy(root)
     if session not in policy['allowed_sessions']:
@@ -376,7 +584,7 @@ def discover_json_one(root, session, *, transport, evidence_folder, _listing=Non
                     headers=response.headers, started_at=started, completed_at=completed,
                     sha256=hashlib.sha256(response.body).hexdigest()))
                 return response
-        response, chain = _request(EvidenceTransport(), url, policy['max_listing_bytes'], policy['max_redirects'])
+        response, chain = _request(EvidenceTransport(), url, policy['max_listing_bytes'], policy['max_redirects'], context=context)
         with (folder / (label + '.body')).open('xb') as stream:
             stream.write(response.body)
         frozen._seal(folder / (label + '.response.json'), dict(url=response.url, chain=chain,
@@ -393,11 +601,12 @@ def discover_json_one(root, session, *, transport, evidence_folder, _listing=Non
                 sha256=hashlib.sha256(listing.body).hexdigest()))
         discovery = json_endpoints(listing)
         monthly_list, list_chain = fetch('monthly_list', discovery['monthly_list_endpoint'])
-        month_url = monthly_json_url(monthly_list, discovery, session)
+        warnings = []
+        month_url = monthly_json_url(monthly_list, discovery, session, warnings=warnings)
         month_chain, link = [], None
         if month_url is not None:
             monthly, month_chain = fetch('monthly', month_url)
-            link = json_stock_link(monthly, session)
+            link = json_stock_link(monthly, session, warnings=warnings)
         receipt = dict(schema_version='jpx-json-discovery-v1', acquisition_method=METHOD,
             session=session, status='HREF_DISCOVERED' if link else 'NOT_YET_AVAILABLE',
             policy_sha256=policy_hash, listing_url=listing.url,
@@ -408,11 +617,15 @@ def discover_json_one(root, session, *, transport, evidence_folder, _listing=Non
             monthly_json_sha256=month_chain[-1]['response_sha256'] if month_chain else None,
             monthly_json_observed_at=month_chain[-1]['completed_at'] if month_chain else None,
             link=link, redirect_chains=dict(listing=listing_chain, monthly_list=list_chain, monthly=month_chain),
-            pdf_requests=0)
+            pdf_requests=0, warnings=warnings, retry_count=context.run.retries.get(session, 0),
+            final_result='HREF_DISCOVERED' if link else 'NOT_YET_AVAILABLE')
         frozen._seal(folder / 'discovery.json', receipt)
+        context.warnings.extend(warnings)
         return receipt
     except Exception as e:
-        frozen._seal(folder / 'failure.json', dict(reason=str(e), automatic_retry=False, pdf_requests=0))
+        frozen._seal(folder / 'failure.json', dict(reason=str(e), automatic_retry=False, pdf_requests=0,
+            retry_count=context.run.retries.get(session, 0), final_result=str(e).split(':', 1)[0],
+            attempt_refs=[lifecycle.reference(path) for path in sorted(context.folder.glob('request-*.json'))]))
         raise
 
 
@@ -437,37 +650,162 @@ def _policy(root):
     policy = json.loads(path.read_bytes())['historical_direct']
     if (policy['acquisition_method'] != METHOD or policy['scope'] != 'HISTORICAL_CATCH_UP_ONLY'
             or policy['listing_url'] != LISTING or set(policy['allowed_hosts']) != HOSTS
-            or policy['automatic_retry'] or policy['scheduled']):
+            or policy.get('automatic_retry') is not True or policy.get('max_retries') != 2
+            or policy.get('stop_policy_version') != lifecycle.VERSION or policy['scheduled']):
         raise ValueError('HISTORICAL_DIRECT_POLICY_INVALID')
     return policy, core.sha256(path)
 
 
-def _already_local(root, session):
+def _already_local(root, session, calendar):
     inbox = root / 'data/outcome_input/manual_jpx'
     manifest_path = inbox / 'retention_manifest.json'
     entries = json.loads(manifest_path.read_bytes())['entries'] if manifest_path.exists() else []
-    for entry in entries:
-        if entry['session_date'] == session:
-            retained = inbox / entry['filename']
-            if retained.is_file() and core.sha256(retained) != entry.get('sha256'):
-                raise ValueError('LOCAL_RAW_HASH_CONFLICT_REVIEW_REQUIRED')
-            return True
+    matches = [entry for entry in entries if entry['session_date'] == session]
+    if len(matches) > 1:
+        raise ValueError('LOCAL_MANIFEST_SESSION_AMBIGUOUS')
+    for entry in matches:
+        retained = inbox / entry['filename']
+        if retained.is_file() and core.sha256(retained) != entry.get('sha256'):
+            raise ValueError('LOCAL_RAW_HASH_CONFLICT_REVIEW_REQUIRED')
+        source_raw = entry.get('source_metadata', {}).get('raw_path')
+        if source_raw and Path(source_raw).is_file() and core.sha256(source_raw) != entry.get('sha256'):
+            raise ValueError('LOCAL_SOURCE_RAW_HASH_CONFLICT_REVIEW_REQUIRED')
+        parsed_path = entry.get('normalized_output_path')
+        if parsed_path and entry.get('normalized_output_sha256'):
+            parsed_path = Path(parsed_path)
+            if not parsed_path.is_file() or core.sha256(parsed_path) != entry['normalized_output_sha256']:
+                raise ValueError('LOCAL_PARSED_HASH_CONFLICT_REVIEW_REQUIRED')
+            if retained.is_file():
+                with tempfile.TemporaryDirectory(prefix='jpx-manifest-validation-') as temporary:
+                    gap.stage_existing_pdf(parsed_path, dict(entries=matches), calendar, inbox,
+                                           Path(temporary) / 'layer.json', allowed_sessions=[session])
+                return dict(code='EXISTING_VALID_LOCAL', local_validation='PASS')
+        return dict(code='EXISTING_LOCAL_REQUIRES_VALIDATION', local_validation='PENDING')
     if (inbox / ('stq_' + session.replace('-', '') + '.pdf')).exists():
-        return True
+        return dict(code='EXISTING_LOCAL_REQUIRES_VALIDATION', local_validation='PENDING')
     for path in (root / 'data/outcome_parsed/jpx').glob('*.json'):
         if json.loads(path.read_bytes()).get('session_date') == session:
-            return True
+            return dict(code='EXISTING_LOCAL_REQUIRES_VALIDATION', local_validation='PENDING')
     known = {(inbox / e['filename']).resolve() for e in entries}
     if any(p.resolve() not in known for p in inbox.rglob('*.pdf')):
         raise ValueError('UNREGISTERED_LOCAL_RAW_REVIEW_REQUIRED')
     return False
 
 
-def acquire_one(root, session, *, transport):
-    """Exactly one session, serialized; no automatic retry even after interruption.
+def _verify_redirect_evidence(chain, first, digest):
+    if not chain or chain[0]['url'] != first or chain[-1]['response_sha256'] != digest or chain[-1]['status'] != 200:
+        raise ValueError('REDIRECT_PROVENANCE_CONFLICT')
+    for index, record in enumerate(chain):
+        official_url(record['url'])
+        if record.get('response_url', record['url']) != record['url']:
+            raise ValueError('REDIRECT_PROVENANCE_CONFLICT')
+        if index < len(chain) - 1:
+            location = Response(record['url'], record['status'], record['headers'], b'').header('location')
+            if (record['status'] not in (301, 302, 303, 307, 308) or not location
+                    or official_url(urljoin(record['url'], location)) != chain[index + 1]['url']):
+                raise ValueError('REDIRECT_PROVENANCE_CONFLICT')
 
-    Bundles are candidates: this function never changes Manifest, Runtime,
-    Historical Bridge, Forecast, Fresh Close, or Outcome history.
+
+def _verified_acquisition(folder, session):
+    """Replay official discovery and hash correspondence using retained bytes only."""
+    receipt = core.read_frozen(folder / 'acquisition.json')
+    if receipt.get('reused_acquisition_reference'):
+        ref = receipt['reused_acquisition_reference']
+        previous = lifecycle.read_reference(ref)
+        if any(receipt.get(key) != value for key, value in previous.items()
+               if key != 'reused_acquisition_reference'):
+            raise ValueError('REUSED_ACQUISITION_PROVENANCE_CONFLICT')
+        prior_folder = Path(ref['path']).parent
+        if prior_folder == folder or not prior_folder.is_relative_to(folder.parents[2]):
+            raise ValueError('REUSED_ACQUISITION_SCOPE_CONFLICT')
+        _, raw = _verified_acquisition(prior_folder, session)
+        return receipt, raw
+    raw = Path(receipt['raw_path']).resolve()
+    if (receipt.get('session') != session or receipt.get('acquisition_method') != METHOD
+            or receipt.get('source_role') != 'OUTCOME_ONLY' or receipt.get('listing_url') != LISTING
+            or not raw.is_relative_to(folder.parent.resolve())
+            or core.sha256(raw) != receipt['raw_sha256']
+            or core.sha256(folder / 'listing.html') != receipt['listing_sha256']):
+        raise ValueError('ACQUISITION_PROVENANCE_OR_HASH_CONFLICT')
+    chain = receipt['listing_response_metadata']
+    listing = Response(chain[-1]['url'], chain[-1]['status'], chain[-1]['headers'],
+                       (folder / 'listing.html').read_bytes())
+    if chain[0]['url'] != LISTING or chain[-1]['response_sha256'] != receipt['listing_sha256']:
+        raise ValueError('LISTING_PROVENANCE_CONFLICT')
+    dom = ListingHTML(listing.body.decode('utf-8-sig'))
+    if any('BUCKNUMBER_JSON' in ''.join(c for c in n.children if isinstance(c, str))
+           for n in dom.root.descendants('script')):
+        saved = folder / 'json_discovery'
+        discovery_receipt = core.read_frozen(saved / 'discovery.json')
+        def load(label, first):
+            meta = core.read_frozen(saved / (label + '.response.json'))
+            body = (saved / (label + '.body')).read_bytes()
+            if hashlib.sha256(body).hexdigest() != meta['sha256']:
+                raise ValueError('JSON_DISCOVERY_HASH_CONFLICT')
+            last = meta['chain'][-1]
+            if last['response_sha256'] != meta['sha256']:
+                raise ValueError('JSON_DISCOVERY_PROVENANCE_CONFLICT')
+            _verify_redirect_evidence(meta['chain'], first, meta['sha256'])
+            if last['url'] != meta['url']:
+                raise ValueError('JSON_DISCOVERY_PROVENANCE_CONFLICT')
+            return Response(meta['url'], last['status'], last['headers'], body)
+        discovery = json_endpoints(listing)
+        monthly_list = load('monthly_list', discovery['monthly_list_endpoint'])
+        month_url = monthly_json_url(monthly_list, discovery, session)
+        monthly = load('monthly', month_url)
+        if discovery_receipt['session'] != session:
+            raise ValueError('JSON_DISCOVERY_PROVENANCE_CONFLICT')
+        link = json_stock_link(monthly, session)
+    else:
+        link = listing_link(listing, session)
+    if not link or any(receipt.get(key) != value for key, value in link.items()):
+        raise ValueError('SOURCE_IDENTITY_MISMATCH')
+    pdf_chain = receipt['redirect_chain']
+    if (pdf_chain[0]['url'] != link['resolved_pdf_url']
+            or pdf_chain[-1]['url'] != receipt['final_pdf_url']
+            or pdf_chain[-1]['response_sha256'] != receipt['raw_sha256']):
+        raise ValueError('PDF_PROVENANCE_CONFLICT')
+    _verify_redirect_evidence(chain, LISTING, receipt['listing_sha256'])
+    _verify_redirect_evidence(pdf_chain, link['resolved_pdf_url'], receipt['raw_sha256'])
+    validate_pdf(Response(receipt['final_pdf_url'], receipt['http_status'],
+                          {'Content-Type': receipt['content_type']}, raw.read_bytes()))
+    return receipt, raw
+
+
+def _candidate(folder, receipt, raw, session, calendar):
+    parsed = parser.parse(raw, session, acquisition_method=METHOD)
+    frozen._seal(folder / 'parsed.json', parsed)
+    entry = dict(session_date=session, filename=raw.name, sha256=receipt['raw_sha256'],
+                 downloaded_at=receipt['completed_at'], parsed_at=parsed['retrieved_at'],
+                 acquisition_type='BACKFILL', acquisition_origin=METHOD, parser_status='PASS',
+                 core6_count=6, schema_validation='PASS', normalized_output_path=str(folder / 'parsed.json'),
+                 normalized_output_sha256=core.sha256(folder / 'parsed.json'),
+                 source_metadata=receipt, manual_review=True, eligible_for_trash=False,
+                 scoring_status='NOT_RUN', forecast_ids=[], corporate_action_flag='UNKNOWN')
+    gap.stage_existing_pdf(folder / 'parsed.json', dict(entries=[entry]), calendar,
+                           raw.parent, folder / 'validated_layer.json', allowed_sessions=[session])
+    return entry
+
+
+def _validated_saved(folder, session, calendar):
+    receipt, raw = _verified_acquisition(folder, session)
+    result = core.read_frozen(folder / 'result.json')
+    entry = result['manifest_entry_candidate']
+    if (entry['normalized_output_sha256'] != core.sha256(folder / 'parsed.json')
+            or entry['source_metadata'] != receipt):
+        raise ValueError('SAVED_BUNDLE_HASH_CONFLICT')
+    core.read_frozen(folder / 'parsed.json')
+    with tempfile.TemporaryDirectory(prefix='jpx-existing-validation-') as temporary:
+        gap.stage_existing_pdf(folder / 'parsed.json', dict(entries=[entry]), calendar,
+                               raw.parent, Path(temporary) / 'layer.json', allowed_sessions=[session])
+    return result
+
+
+def acquire_one(root, session, *, transport, resolution=None, run_state=None):
+    """One authorized historical session, with bounded retry and offline SOFT resume.
+
+    Bundles stay pending explicit registration. STOP, Raw and old attempts are
+    immutable; this function never changes Manifest, Runtime or Forecast state.
     """
     root = Path(root).resolve()
     policy, policy_hash = _policy(root)
@@ -482,75 +820,145 @@ def acquire_one(root, session, *, transport):
         raise ValueError('NOT_APPROVED_HISTORICAL_SESSION')
     store = root / 'data/jpx_historical_direct'
     with frozen._locked(store):
-        if (store / 'STOP.json').exists():
-            raise ValueError('STOP_FOR_REVIEW_NO_AUTOMATIC_RETRY')
-        if _already_local(root, session):
-            return dict(status='SKIP_EXISTING_LOCAL', session=session, web_requests=0)
-        folder = store / session
-        folder.mkdir()  # Existing attempt, success or interrupted, is never retried.
-        frozen._seal(folder / 'start.json', dict(session=session, acquisition_method=METHOD,
-                                                started_at=now.isoformat(), policy_sha256=policy_hash))
+        stops = lifecycle.Stops(store)
+        active = stops.gate(session, resolution)
+        run = run_state or RunState()
+        run.bind(store)
+        if run.blocked_hosts:
+            raise ValueError('HARD_STOP_ACTIVE:' + next(iter(run.blocked_hosts.values())))
+        folder = None
+        context = RequestContext(run, session)
+        last_success = None
         try:
-            listing, listing_chain = _request(transport, LISTING, policy['max_listing_bytes'], policy['max_redirects'])
-            with (folder / 'listing.html').open('xb') as stream:
-                stream.write(listing.body)
-            dom = ListingHTML(listing.body.decode('utf-8-sig'))
-            # Observed JPX JSON program takes priority over the legacy row fixtures.
-            if any('BUCKNUMBER_JSON' in ''.join(c for c in n.children if isinstance(c, str))
-                   for n in dom.root.descendants('script')):
-                discovery_receipt = discover_json_one(root, session, transport=transport,
-                    evidence_folder=folder / 'json_discovery', _listing=(listing, listing_chain))
-                link = discovery_receipt['link']
+            existing = _already_local(root, session, calendar)
+            if existing and active is None:
+                return dict(status='SKIP_EXISTING_LOCAL', state='SKIP', session=session, web_requests=0, **existing)
+            previous = store / session
+            if previous.exists() and active is None:
+                candidates = [previous, *sorted((previous / 'attempts').glob('*'))]
+                for candidate in reversed(candidates):
+                    if (candidate / 'result.json').exists():
+                        old = core.read_frozen(candidate / 'result.json')
+                        if old['status'] == 'VALIDATED_PENDING_EXPLICIT_REGISTRATION':
+                            _validated_saved(candidate, session, calendar)
+                            return dict(status='SKIP_EXISTING_LOCAL', state='SKIP', code='EXISTING_VALID_LOCAL',
+                                        local_validation='PASS', session=session, web_requests=0)
+                        if old.get('completed_at', now.isoformat())[:10] == now.date().isoformat():
+                            return dict(old, web_requests=0)
+                        break
+                else:
+                    raise FileExistsError('INTERRUPTED_ATTEMPT_REVIEW_REQUIRED')
+            if active is not None:
+                resolution_ref = stops.check_resolution(active, resolution, root)
+                run.retries[session] = max(run.retries.get(session, 0), active['record'].get('retry_count', 0))
+                run.save()
+                # SOFT resume requires retained official acquisition evidence; no refetch.
+                refs = active['record']['evidence_refs']
+                acquisition_refs = [ref for ref in refs if Path(ref['path']).name == 'acquisition.json']
+                source_folder = Path(acquisition_refs[0]['path']).parent if acquisition_refs else previous
+                receipt, raw = _verified_acquisition(source_folder, session)
+            if previous.exists():
+                attempts = previous / 'attempts'
+                attempts.mkdir(exist_ok=True)
+                folder = attempts / str(len(list(attempts.iterdir())) + 1).zfill(6)
             else:
-                link = listing_link(listing, session)
-            observed_at = listing_chain[-1]['completed_at']
-            if link is None:
-                result = dict(status='NOT_YET_AVAILABLE', session=session, acquisition_method=METHOD,
-                              listing_url=LISTING, listing_observed_at=observed_at,
-                              listing_response_metadata=listing_chain)
-                frozen._seal(folder / 'result.json', result)
-                return result
-            response, pdf_chain = _request(transport, link['resolved_pdf_url'], policy['max_pdf_bytes'], policy['max_redirects'])
-            validate_pdf(response)
-            # Local naming is independent of URL discovery; this is never used to construct a URL.
-            raw = folder / ('stq_' + session.replace('-', '') + '.pdf')
-            with raw.open('xb') as stream:
-                stream.write(response.body)
-                stream.flush()
-                os.fsync(stream.fileno())
-            receipt = dict(schema_version='jpx-historical-direct-v1', scope='HISTORICAL_CATCH_UP_ONLY',
-                           source_role='OUTCOME_ONLY', acquisition_method=METHOD, browser_actor=None,
-                           listing_url=LISTING, listing_observed_at=observed_at,
-                           listing_response_metadata=listing_chain,
-                           listing_sha256=core.sha256(folder / 'listing.html'), **link,
-                           redirect_chain=pdf_chain, final_pdf_url=response.url,
-                           started_at=now.isoformat(), completed_at=pdf_chain[-1]['completed_at'],
-                           http_status=response.status, content_type=response.content_type(),
-                           raw_sha256=core.sha256(raw), raw_path=str(raw), policy_sha256=policy_hash,
-                           publication_time=None, terms_status='UNRESOLVED')
-            if datetime.fromisoformat(receipt['completed_at']) < datetime.fromisoformat(observed_at) or datetime.fromisoformat(observed_at) < now:
-                raise ValueError('ACQUISITION_CLOCK_INVALID')
-            frozen._seal(folder / 'acquisition.json', receipt)  # Keep original evidence even if parsing fails.
-            parsed = parser.parse(raw, session, acquisition_method=METHOD)
-            frozen._seal(folder / 'parsed.json', parsed)
-            entry = dict(session_date=session, filename=raw.name, sha256=receipt['raw_sha256'],
-                         downloaded_at=receipt['completed_at'], parsed_at=parsed['retrieved_at'],
-                         acquisition_type='BACKFILL', acquisition_origin=METHOD, parser_status='PASS',
-                         core6_count=6, schema_validation='PASS', normalized_output_path=str(folder / 'parsed.json'),
-                         normalized_output_sha256=core.sha256(folder / 'parsed.json'),
-                         source_metadata=receipt, manual_review=True, eligible_for_trash=False,
-                         scoring_status='NOT_RUN', forecast_ids=[], corporate_action_flag='UNKNOWN')
-            # Existing Raw/Parsed/Core6/OHLC/hash validation, without touching the real Manifest.
-            gap.stage_existing_pdf(folder / 'parsed.json', dict(entries=[entry]), calendar,
-                                   folder, folder / 'validated_layer.json', allowed_sessions=[session])
-            result = dict(status='VALIDATED_PENDING_EXPLICIT_REGISTRATION', session=session,
-                          acquisition_method=METHOD, acquisition_sha256=core.sha256(folder / 'acquisition.json'),
-                          manifest_entry_candidate=entry, automatic_registration=False)
+                folder = previous
+            folder.mkdir()
+            context.folder = folder
+            frozen._seal(folder / 'start.json', dict(session=session, acquisition_method=METHOD,
+                started_at=now.isoformat(), policy_sha256=policy_hash, policy_version=lifecycle.VERSION,
+                run_id=run.run_id, retry_count=run.retries.get(session, 0)))
+            resumed = None
+            if active is not None:
+                receipt = dict(receipt, reused_acquisition_reference=lifecycle.reference(source_folder / 'acquisition.json'))
+                frozen._seal(folder / 'acquisition.json', receipt)
+                last_success = lifecycle.reference(folder / 'acquisition.json')
+                entry = _candidate(folder, receipt, raw, session, calendar)
+                resumed = stops.resume(active, resolution_ref, evidence_validation='PASS', run_id=run.run_id,
+                                       retry_count=run.retries.get(session, 0), attempt=folder)
+            else:
+                listing, listing_chain = _request(transport, LISTING, policy['max_listing_bytes'],
+                                                  policy['max_redirects'], context=context)
+                with (folder / 'listing.html').open('xb') as stream:
+                    stream.write(listing.body)
+                dom = ListingHTML(listing.body.decode('utf-8-sig'))
+                if any('BUCKNUMBER_JSON' in ''.join(c for c in n.children if isinstance(c, str))
+                       for n in dom.root.descendants('script')):
+                    discovery = discover_json_one(root, session, transport=transport,
+                        evidence_folder=folder / 'json_discovery', _listing=(listing, listing_chain), _context=context)
+                    link = discovery['link']
+                else:
+                    link = listing_link(listing, session)
+                observed_at = listing_chain[-1]['completed_at']
+                if link is None:
+                    result = dict(status='NOT_YET_AVAILABLE', state='SKIP', session=session, acquisition_method=METHOD,
+                                  listing_url=LISTING, listing_observed_at=observed_at,
+                                  listing_response_metadata=listing_chain, completed_at=_now().isoformat(),
+                                  retry_count=run.retries.get(session, 0), final_result='NOT_YET_AVAILABLE',
+                                  warnings=context.warnings, web_requests=context.count)
+                    frozen._seal(folder / 'result.json', result)
+                    return result
+                response, pdf_chain = _request(transport, link['resolved_pdf_url'], policy['max_pdf_bytes'],
+                                               policy['max_redirects'], context=context)
+                validate_pdf(response)
+                # Local filename is never used to construct a retrieval URL.
+                raw = folder / ('stq_' + session.replace('-', '') + '.pdf')
+                with raw.open('xb') as stream:
+                    stream.write(response.body)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                receipt = dict(schema_version='jpx-historical-direct-v1', scope='HISTORICAL_CATCH_UP_ONLY',
+                               source_role='OUTCOME_ONLY', acquisition_method=METHOD, browser_actor=None,
+                               listing_url=LISTING, listing_observed_at=observed_at,
+                               listing_response_metadata=listing_chain,
+                               listing_sha256=core.sha256(folder / 'listing.html'), **link,
+                               redirect_chain=pdf_chain, final_pdf_url=response.url,
+                               started_at=now.isoformat(), completed_at=pdf_chain[-1]['completed_at'],
+                               http_status=response.status, content_type=response.content_type(),
+                               raw_sha256=core.sha256(raw), raw_path=str(raw), policy_sha256=policy_hash,
+                               publication_time=None, terms_status='UNRESOLVED', warnings=context.warnings)
+                if datetime.fromisoformat(receipt['completed_at']) < datetime.fromisoformat(observed_at) or datetime.fromisoformat(observed_at) < now:
+                    raise ValueError('ACQUISITION_CLOCK_INVALID')
+                frozen._seal(folder / 'acquisition.json', receipt)
+                last_success = lifecycle.reference(folder / 'acquisition.json')
+                entry = _candidate(folder, receipt, raw, session, calendar)
+            result = dict(status='VALIDATED_PENDING_EXPLICIT_REGISTRATION', state='WARN' if receipt.get('warnings') else 'PASS',
+                          session=session, acquisition_method=METHOD, acquisition_sha256=core.sha256(folder / 'acquisition.json'),
+                          manifest_entry_candidate=entry, automatic_registration=False, warnings=receipt.get('warnings', []),
+                          resumed_reference=resumed, completed_at=_now().isoformat(), web_requests=context.count,
+                          retry_count=run.retries.get(session, 0), final_result='VALIDATED_PENDING_EXPLICIT_REGISTRATION',
+                          aggregate=dict(validated_sessions=1, validated_tickers=6))
             frozen._seal(folder / 'result.json', result)
             return result
-        except Exception as e:
-            failure = dict(status='REVIEW_REQUIRED', session=session, acquisition_method=METHOD,
-                           failed_at=_now().isoformat(), reason=str(e), automatic_retry=False)
-            frozen._seal(folder / 'failure.json', failure)
-            frozen._seal(store / 'STOP.json', failure)
+        except FileExistsError:
+            raise
+        except Exception as error:
+            failure = dict(status='SKIP' if str(error) == 'RETRY_EXHAUSTED' else 'REVIEW_REQUIRED',
+                           session=session, acquisition_method=METHOD, failed_at=_now().isoformat(),
+                           reason=str(error), final_result=str(error).split(':', 1)[0],
+                           run_id=run.run_id, retry_count=run.retries.get(session, 0))
+            refs = []
+            if folder is not None:
+                failure['attempt_refs'] = [lifecycle.reference(path) for path in sorted(folder.glob('request-*.json'))]
+                frozen._seal(folder / 'failure.json', failure)
+                refs.append(lifecycle.reference(folder / 'failure.json'))
+                if last_success:
+                    refs.append(last_success)
+            else:
+                manifest = root / 'data/outcome_input/manual_jpx/retention_manifest.json'
+                failure['local_manifest_reference'] = lifecycle.reference(manifest) if manifest.is_file() else None
+                failure['local_inbox'] = str(root / 'data/outcome_input/manual_jpx')
+                failure_path = store / ('local-failure-' + uuid4().hex + '.json')
+                frozen._seal(failure_path, failure)
+                refs.append(lifecycle.reference(failure_path))
+            if str(error) == 'RETRY_EXHAUSTED':
+                result = dict(status='SKIP_RETRY_EXHAUSTED', state='SKIP', session=session,
+                              retry_count=run.retries.get(session, 0), final_result='RETRY_EXHAUSTED',
+                              completed_at=_now().isoformat(), web_requests=context.count)
+                frozen._seal(folder / 'result.json', result)
+                return result
+            # Failed resolution checks preserve the active stop without inventing a new cause.
+            if active is None or folder is not None:
+                stops.stop(str(error), session, evidence_refs=refs, last_success=last_success,
+                           run_id=run.run_id, retry_count=run.retries.get(session, 0))
             raise

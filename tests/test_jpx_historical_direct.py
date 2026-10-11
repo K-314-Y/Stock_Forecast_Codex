@@ -147,11 +147,11 @@ class RequestTests(unittest.TestCase):
             self.request(transport)
         self.assertEqual(len(transport.calls), 1)
 
-    def test_429_stops_after_one_request(self):
-        transport = MockTransport([response(status=429)])
-        with self.assertRaisesRegex(ValueError, 'RATE_LIMIT'):
+    def test_persistent_429_stops_after_one_retry(self):
+        transport = MockTransport([response(status=429, **{'Retry-After': '0'})] * 2)
+        with self.assertRaisesRegex(ValueError, 'HOST_PERSISTENT_429'):
             self.request(transport)
-        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(len(transport.calls), 2)
 
     def test_external_redirect_not_contacted(self):
         transport = MockTransport([response(status=302, Location='https://example.com/a.pdf')])
@@ -190,11 +190,11 @@ class RequestTests(unittest.TestCase):
             self.request(transport)
         self.assertEqual(len(transport.calls), 1)
 
-    def test_transport_timeout_no_retry(self):
-        transport = MockTransport([TimeoutError('timeout')])
-        with self.assertRaises(TimeoutError):
+    def test_transport_timeout_retry_max_two(self):
+        transport = MockTransport([TimeoutError('timeout')] * 3)
+        with self.assertRaisesRegex(ValueError, 'RETRY_EXHAUSTED'):
             self.request(transport)
-        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(len(transport.calls), 3)
 
     def test_redirect_challenge_body_stops(self):
         transport = MockTransport([response(body=b'<title>Security challenge</title>', status=302, Location='/other/')])
@@ -332,7 +332,7 @@ class AcquisitionTests(unittest.TestCase):
         transport = MockTransport([response(status=403)])
         with self.assertRaisesRegex(ValueError, 'HTTP_403'):
             direct.acquire_one(self.root, SESSION, transport=transport)
-        with self.assertRaisesRegex(ValueError, 'STOP_FOR_REVIEW'):
+        with self.assertRaisesRegex(ValueError, 'HARD_STOP_ACTIVE'):
             direct.acquire_one(self.root, '2026-10-06', transport=transport)
         self.assertEqual(len(transport.calls), 1)
         self.assertEqual(probe.core.read_frozen(self.root / 'data/jpx_historical_direct/STOP.json')['reason'], 'HTTP_403')
@@ -373,8 +373,7 @@ class AcquisitionTests(unittest.TestCase):
         before = {p.name:p.read_bytes() for p in folder.iterdir()}
         with self.assertRaises(FileExistsError):
             probe._seal(folder / 'acquisition.json', {'overwrite': True})
-        with self.assertRaises(FileExistsError):
-            direct.acquire_one(self.root, '2026-09-15', transport=MockTransport([]))
+        self.assertEqual(direct.acquire_one(self.root, '2026-09-15', transport=MockTransport([]))['status'], 'SKIP_EXISTING_LOCAL')
         self.assertEqual({p.name:p.read_bytes() for p in folder.iterdir()}, before)
         # Existing Manifest/Raw/Parsed validation can read the candidate after explicit registration.
         self.manifest.write_text(json.dumps(dict(entries=[result['manifest_entry_candidate']])))
@@ -386,6 +385,26 @@ class AcquisitionTests(unittest.TestCase):
     def test_direct_cannot_claim_browser_actor(self):
         with self.assertRaisesRegex(ValueError, 'BROWSER_ACTOR_CONFLICT'):
             parser.parse(Path('/unused.pdf'), SESSION, direct.METHOD, 'GOOGLE_CHROME_VISIBLE_RDC')
+
+    def test_soft_resume_revalidates_real_parser_without_download(self):
+        with patch.object(direct.gap, 'stage_existing_pdf', side_effect=ValueError('MANIFEST_NOT_VALIDATED')):
+            with self.assertRaisesRegex(ValueError, 'MANIFEST_NOT_VALIDATED'):
+                self.valid_acquisition()
+        store = self.root / 'data/jpx_historical_direct'
+        item = direct.lifecycle.Stops(store).index['active'][0]
+        fixes = [direct.lifecycle.reference(self.root / 'config/jpx_daily_acquisition_config.json')]
+        report = self.root / 'regression.json'
+        probe._seal(report, dict(status='PASS', checks=dict(fixture='PASS', regression='PASS'), fix_refs=fixes))
+        resolution = self.root / 'resolution.json'
+        probe._seal(resolution, dict(stop_reference=item['reference'], scope='session', target='2026-09-15',
+            root_cause='Local manifest validation bug fixed', scope_isolation='PASS', fix_refs=fixes,
+            validation_refs=[direct.lifecycle.reference(report)], evidence_refs=item['record']['evidence_refs']))
+        transport = MockTransport([])
+        result = direct.acquire_one(self.root, '2026-09-15', transport=transport, resolution=resolution)
+        self.assertEqual(result['state'], 'PASS')
+        self.assertEqual(result['aggregate']['validated_tickers'], 6)
+        self.assertFalse(transport.calls)
+        self.assertEqual(direct.lifecycle.read_reference(result['resumed_reference'])['state'], 'RESUMED')
 
 
 if __name__ == '__main__':

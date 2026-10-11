@@ -28,6 +28,12 @@ class Transport:
 
 
 class Tests(unittest.TestCase):
+    def isolated_root(self, temp):
+        root = Path(temp) / 'root'
+        (root / 'config').mkdir(parents=True)
+        (root / 'config/jpx_daily_acquisition_config.json').write_bytes((ROOT / 'config/jpx_daily_acquisition_config.json').read_bytes())
+        return root
+
     def test_discovery_and_no_hardcoded_endpoint(self):
         changed=HTML.replace(b'/automation/markets/statistics-equities/daily/json/',b'/other/observed/').replace(b'tsedaily_report_monthlylist.json',b'published-months.json').replace(b'tsedaily_report_${month}.json',b'listed_${month}.json')
         discovery=d.json_endpoints(response(changed))
@@ -89,11 +95,12 @@ class Tests(unittest.TestCase):
         t=Transport([response(HTML),jr([{'Month':'202610'}],listurl),jr([{'TradeDate':'20261005','Stocks':'/real/non-date-name.pdf'}],monthurl)])
         with tempfile.TemporaryDirectory() as temp:
             folder=Path(temp)/'evidence'
-            result=d.discover_json_one(ROOT,SESSION,transport=t,evidence_folder=folder)
+            root=self.isolated_root(temp)
+            result=d.discover_json_one(root,SESSION,transport=t,evidence_folder=folder)
             self.assertEqual(result['status'],'HREF_DISCOVERED'); self.assertEqual(result['pdf_requests'],0)
             self.assertEqual(t.calls,[d.LISTING,listurl,monthurl])
             self.assertTrue((folder/'discovery.json').exists())
-            with self.assertRaises(FileExistsError): d.discover_json_one(ROOT,SESSION,transport=t,evidence_folder=folder)
+            with self.assertRaises(FileExistsError): d.discover_json_one(root,SESSION,transport=t,evidence_folder=folder)
 
     def test_saved_live_responses(self):
         prior=ROOT/'analysis/jpx_json_listing_only_20261009T121508Z'
@@ -113,7 +120,7 @@ class Tests(unittest.TestCase):
     def test_failed_response_body_retained(self):
         with tempfile.TemporaryDirectory() as temp:
             folder=Path(temp)/'evidence'; t=Transport([response(b'Access Denied',status=403)])
-            with self.assertRaisesRegex(ValueError,'HTTP_403'): d.discover_json_one(ROOT,SESSION,transport=t,evidence_folder=folder)
+            with self.assertRaisesRegex(ValueError,'HTTP_403'): d.discover_json_one(self.isolated_root(temp),SESSION,transport=t,evidence_folder=folder)
             self.assertEqual((folder/'listing.http1.body').read_bytes(),b'Access Denied')
             self.assertTrue((folder/'failure.json').exists())
 
