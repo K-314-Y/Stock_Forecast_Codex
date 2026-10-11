@@ -305,13 +305,14 @@ class ReviewRegressionTests(unittest.TestCase):
             attempts.append(len(transport.calls))
         self.assertEqual(attempts, [3, 0, 0])
         self.assertFalse(policy.Stops(self.f.store).index['active'])
-        # Policy explicitly permits a later normal observation, not a new ID alone.
+        # RETRY_EXHAUSTED is not a completed operation; a later day cannot
+        # resurrect its attempts. Independent sessions retain fresh budgets.
         with patch.object(d, '_now', return_value=NOW + timedelta(days=1)):
             transport = Transport([TimeoutError('transient')] * 3)
             with self.assertRaisesRegex(ValueError, 'RETRY_EXHAUSTED'):
                 d.discover_json_one(self.f.root, SESSION, transport=transport,
                                     evidence_folder=self.f.root / 'later', run_state=d.RunState('later'))
-            self.assertEqual(len(transport.calls), 3)
+            self.assertEqual(transport.calls, [])
 
     def test_partial_retry_budget_survives_new_diagnostic_and_acquisition_run_ids(self):
         transport = Transport([TimeoutError('transient'), response(b'not valid JPX listing')])

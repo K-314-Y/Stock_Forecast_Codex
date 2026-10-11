@@ -191,7 +191,7 @@ class RequestContext:
     integrity_evidence: dict = field(default_factory=dict)
 
     def budget(self):
-        """Same target budget survives run IDs; later normal JPX days are new observations."""
+        """Unfinished operations retain their budget across run IDs and JPX days."""
         if self.stops is None:
             return None
         targets = self.stops.index.setdefault('retry_targets', {})
@@ -199,7 +199,17 @@ class RequestContext:
             self.observation_day = _now().astimezone(ZoneInfo('Asia/Tokyo')).date().isoformat()
         day = self.observation_day  # Never reset a running operation at midnight.
         value = targets.get(self.session)
-        if value is None or value['day'] != day and not value.get('in_flight'):
+        completed = False
+        if value is not None and value.get('day') != day and value.get('in_flight') is False:
+            requests = value.get('requests')
+            completed = (isinstance(requests, dict) and bool(requests) and not value.get('exhausted')
+                         and all(item.get('state') == 'COMPLETED' and item.get('result_reference')
+                                 for item in requests.values()))
+            if completed:
+                # A state label alone cannot prove completion after a crash.
+                for item in requests.values():
+                    core.read_frozen(lifecycle.verify_reference(item['result_reference']))
+        if value is None or completed:
             value = dict(day=day, retry_count=0, exhausted=False, in_flight=False, requests={})
             targets[self.session] = value
         count = value['retry_count']
@@ -223,13 +233,21 @@ class RequestContext:
             raise ValueError('RETRY_INTERRUPTED_REVIEW_REQUIRED')
         # Older summaries cannot prove how many attempts an unfinished operation
         # already made. Preserve their fail-closed review path, not a fresh budget.
-        if 'requests' not in budget and budget.get('url'):
+        if ('requests' not in budget or not isinstance(budget['requests'], dict)
+                or not budget['requests'] and (budget.get('url') or budget.get('retry_count'))):
             raise ValueError('RETRY_INTERRUPTED_REVIEW_REQUIRED')
         canonical_url = _canonical_request_url(url)
         identity = dict(session=self.session, url=canonical_url, role=role)
         key = hashlib.sha256(core.canonical_bytes(identity)).hexdigest()
         requests = budget.setdefault('requests', {})
         operation = requests.setdefault(key, dict(identity, attempts_started=0, state='PENDING'))
+        state = operation.get('state')
+        if (state not in ('PENDING', 'IN_FLIGHT', 'RESPONSE_RECEIVED', 'RETRY',
+                          'RETRY_EXHAUSTED', 'COMPLETED') or state == 'IN_FLIGHT'
+                or state == 'COMPLETED' and not operation.get('result_reference')):
+            raise ValueError('RETRY_INTERRUPTED_REVIEW_REQUIRED')
+        if state == 'RETRY_EXHAUSTED':
+            raise ValueError('RETRY_EXHAUSTED')
         count = operation['attempts_started']
         if type(count) is not int or not 0 <= count <= 3:
             raise ValueError('INVALID_RETRY_BUDGET')
@@ -383,6 +401,15 @@ def _transient(error):
 
 class ChallengeControls(HTMLParser):
     """Strong widget controls or corroborating HTML security structures."""
+    WIDGET_TOKENS = {'g-recaptcha', 'h-captcha', 'cf-challenge', 'cf-turnstile',
+                     'cf-browser-verification', 'challenge-platform', 'bot-challenge',
+                     'security-challenge', 'human-verification'}
+    CAPTCHA_CONTROLS = {'captcha', 'captcha-form', 'captcha-widget', 'captcha-response',
+                        'recaptcha', 'recaptcha-widget', 'recaptcha-response'}
+    CONTROL_TAGS = {'div', 'span', 'form', 'iframe', 'input', 'button'}
+    TEXT_BREAKS = {'br', 'hr', 'div', 'p', 'section', 'article', 'li', 'ul', 'ol',
+                   'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'form'}
+
     def __init__(self, *, inspect_scripts=True):
         super().__init__(convert_charrefs=True)
         self.found = False
@@ -390,25 +417,46 @@ class ChallengeControls(HTMLParser):
         self.signals = set()
         self.inspect_scripts = inspect_scripts
 
+    def text_break(self):
+        for _, _, parts in self.stack:
+            parts.append(' ')
+
     def handle_starttag(self, tag, attrs):
+        if tag in self.TEXT_BREAKS:
+            self.text_break()
         for key, value in attrs:  # Duplicate attributes cannot hide a widget marker.
-            if key in ('id', 'class', 'name', 'src', 'action') and value:
-                self.found |= bool(re.search(r'(?:g-recaptcha|h-captcha|recaptcha|cf-challenge|cf-turnstile|'
-                    r'cf-browser-verification|challenge-platform|bot-challenge|security-challenge|'
-                    r'human-verification|challenges\.cloudflare\.com/turnstile/|'
-                    r'hcaptcha\.com/(?:1/)?api\.js|(?:^|[\s_-])captcha(?:$|[\s_-]))', value, re.I))
+            if not value:
+                continue
+            if key in ('id', 'class', 'name'):
+                tokens = set(value.lower().split())
+                self.found |= bool(tokens & self.WIDGET_TOKENS or
+                                   tag in self.CONTROL_TAGS and tokens & self.CAPTCHA_CONTROLS)
+            elif key in ('src', 'action') and tag in self.CONTROL_TAGS | {'script'}:
+                # Known provider endpoints or exact control path segments, never
+                # a substring such as "captcha-explanation" in a documentation URL.
+                self.found |= bool(re.search(
+                    r'(?:^|/)(?:challenge-platform|security-challenge|bot-challenge|'
+                    r'human-verification|cf-browser-verification)(?:/|[?#]|$)|'
+                    r'(?:^|/)recaptcha/(?:api2|enterprise)(?:/|[?#]|$)|'
+                    r'challenges\.cloudflare\.com/turnstile/|'
+                    r'(?:[\w-]+\.)?hcaptcha\.com/(?:1/)?api\.js(?:[?#]|$)|'
+                    r'(?:^|/)(?:captcha|recaptcha)(?:[?#]|$)', value, re.I))
         attrs = dict(attrs)
-        restriction = attrs.get('role') == 'alert' or bool(re.search(
+        restriction = 'alert' in (attrs.get('role') or '').lower().split() or bool(re.search(
             r'access[-_]?(?:denied|restricted)|restriction|security[-_]alert',
             ' '.join(attrs.get(key) or '' for key in ('id', 'class')), re.I))
         if tag not in ListingHTML.VOID:
             self.stack.append((tag, restriction, []))
-        if tag == 'input' and attrs.get('type', '').lower() in ('submit', 'button'):
+        if tag == 'input' and (attrs.get('type') or '').lower() in ('submit', 'button'):
             self.inspect_text('button', False, attrs.get('value') or '')
 
     def handle_data(self, text):
-        for _, _, parts in self.stack:
-            parts.append(text)
+        # Preserve inline continuity (including split button labels); explicit
+        # DOM line/block boundaries supply spaces. Script/style prose is not
+        # visible semantic text, but known script widget controls are inspected.
+        if not any(tag in ('script', 'style') for tag, _, _ in self.stack):
+            for _, _, parts in self.stack:
+                parts.append(text)
         if self.inspect_scripts and self.stack and self.stack[-1][0] == 'script':
             # Known widget render calls or literal HTML written into the DOM are
             # structured controls. Do not evaluate JS or match descriptive words.
@@ -422,8 +470,9 @@ class ChallengeControls(HTMLParser):
 
     def inspect_text(self, tag, restriction, text):
         text = re.sub(r'\s+', ' ', text).strip()
-        challenge = bool(CHALLENGE.search(text))
-        restricted = bool(re.search(r'access\s+(?:restricted|denied)|verification\s+required', text, re.I))
+        prompt = text.rstrip('.!?: ')
+        challenge = bool(CHALLENGE.fullmatch(prompt))
+        restricted = bool(re.fullmatch(r'access\s+(?:restricted|denied)|verification\s+required', prompt, re.I))
         if restriction and (challenge or restricted):
             self.signals.add('restriction')
         if tag in ('title', 'h1', 'h2') and (challenge or restricted):
@@ -434,7 +483,7 @@ class ChallengeControls(HTMLParser):
             self.signals.add('verification_control')
         # A standalone known prompt remains decisive; explanatory headings and
         # generic "verification required" need another structural signal.
-        if tag in ('title', 'h1', 'form', 'iframe') and CHALLENGE.fullmatch(text.rstrip('.!?: ')):
+        if tag in ('title', 'h1', 'form', 'iframe') and challenge:
             self.found = True
 
     def handle_endtag(self, tag):
@@ -444,6 +493,8 @@ class ChallengeControls(HTMLParser):
                     self.inspect_text(node_tag, restriction, ''.join(parts))
                 del self.stack[index:]
                 break
+        if tag in self.TEXT_BREAKS:
+            self.text_break()
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -655,6 +706,8 @@ def listing_link(response, session):
     official_url(response.url)
     if response.status in STOP_STATUSES:
         raise ValueError(STOP_STATUSES[response.status])
+    if _challenge(response):
+        raise ValueError('SECURITY_CHALLENGE')
     if response.status != 200 or response.content_type() != 'text/html':
         raise ValueError('UNEXPECTED_LISTING_RESPONSE')
     try:
@@ -663,11 +716,6 @@ def listing_link(response, session):
         raise ValueError('UNEXPECTED_LISTING_ENCODING') from e
     dom = ListingHTML(html)
     headings = dom.root.descendants('title') + dom.root.descendants('h1')
-    if any(CHALLENGE.search(n.text()) for n in headings):
-        raise ValueError('SECURITY_CHALLENGE')
-    for n in dom.root.descendants('form') + dom.root.descendants('iframe'):
-        if CHALLENGE.search(n.text() + ' ' + ' '.join(str(v) for v in n.attrs.values())):
-            raise ValueError('SECURITY_CHALLENGE')
     if dom.root.descendants('base') or not any('東京証券取引所日報' in n.text() for n in headings):
         raise ValueError('UNEXPECTED_LISTING_HTML')
     tables = []
