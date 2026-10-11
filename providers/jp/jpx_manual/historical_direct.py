@@ -7,7 +7,7 @@ GET; redirects are checked before following and bounded separately from retries.
 Validated bundles remain pending explicit Manifest/Historical Bridge registration.
 """
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from html.parser import HTMLParser
 from io import BytesIO
 import http.client
@@ -190,28 +190,153 @@ class RequestContext:
     observation_day: str | None = None
     integrity_evidence: dict = field(default_factory=dict)
 
+    def validate_budget(self, value):
+        """Validate the entire old ledger before reading evidence or resetting it."""
+        try:
+            if not isinstance(value, dict):
+                raise ValueError('LEDGER_SCHEMA')
+            day, count = value['day'], value['retry_count']
+            if (not isinstance(day, str) or date.fromisoformat(day).isoformat() != day
+                    or type(count) is not int or not 0 <= count <= 2
+                    or type(value['exhausted']) is not bool or type(value['in_flight']) is not bool
+                    or not isinstance(value['requests'], dict)):
+                raise ValueError('LEDGER_SCHEMA')
+            requests = value['requests']
+            in_flight, exhausted = [], []
+            for key, operation in requests.items():
+                if not isinstance(operation, dict):
+                    raise ValueError('OPERATION_SCHEMA')
+                identity = {field: operation[field] for field in ('session', 'url', 'role')}
+                attempts, state = operation['attempts_started'], operation['state']
+                if (identity['session'] != self.session
+                        or identity['role'] not in ('listing', 'monthly_list', 'monthly', 'pdf')
+                        or _canonical_request_url(identity['url']) != identity['url']
+                        or key != hashlib.sha256(core.canonical_bytes(identity)).hexdigest()
+                        or type(attempts) is not int or not 0 <= attempts <= 3
+                        or state not in ('PENDING', 'IN_FLIGHT', 'RESPONSE_RECEIVED', 'RETRY',
+                                         'RETRY_EXHAUSTED', 'COMPLETED')
+                        or (state == 'PENDING') != (attempts == 0)
+                        or state == 'RETRY' and count == 0):
+                    raise ValueError('OPERATION_SCHEMA')
+                if 'last_attempt' in operation:
+                    attempt = operation['last_attempt']
+                    if (datetime.fromisoformat(attempt['started_at']).tzinfo is None
+                            or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', attempt['run_id'])):
+                        raise ValueError('OPERATION_ATTEMPT')
+                if operation.get('last_result') is not None and not isinstance(operation['last_result'], dict):
+                    raise ValueError('OPERATION_RESULT')
+                if state == 'IN_FLIGHT':
+                    in_flight.append(identity['url'])
+                if state == 'RETRY_EXHAUSTED':
+                    exhausted.append(key)
+            if (value['in_flight'] != bool(in_flight) or len(in_flight) > 1
+                    or value['exhausted'] != bool(exhausted)
+                    or exhausted and (count != 2 or in_flight)
+                    or not requests and (count or value['in_flight'] or value['exhausted'] or value.get('url'))
+                    or requests and _canonical_request_url(value['url']) not in
+                       [operation['url'] for operation in requests.values()]
+                    or in_flight and _canonical_request_url(value['url']) != in_flight[0]):
+                raise ValueError('LEDGER_STATE')
+            if ('retry_not_before' in value
+                    and datetime.fromisoformat(value['retry_not_before']).tzinfo is None):
+                raise ValueError('LEDGER_DEADLINE')
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            raise ValueError('RETRY_INTERRUPTED_REVIEW_REQUIRED') from error
+        # This second pass deliberately follows validation of *every* counter,
+        # identity and state, including operations other than the next request.
+        for key, operation in requests.items():
+            if operation['state'] == 'COMPLETED':
+                self.validate_completion(value, key, operation)
+
+    def completion_identity(self, budget, operation):
+        return dict(session=self.session, url=operation['url'], role=operation['role'],
+                    attempts_started=operation['attempts_started'], observation_day=budget['day'])
+
+    def validate_terminal_result(self, result):
+        """Only a completed acquisition/discovery result can back a receipt."""
+        schema = result['schema_version']
+        if (result['session'] != self.session or result['acquisition_method'] != METHOD
+                or result['policy_version'] != lifecycle.VERSION
+                or result['final_result'] != result['status']
+                or datetime.fromisoformat(result['completed_at']).tzinfo is None
+                or not isinstance(result['completed_requests'], dict) or not result['completed_requests']):
+            raise ValueError('TERMINAL_RESULT_SCHEMA')
+        if schema == 'jpx-historical-result-v1':
+            if result['status'] == 'NOT_YET_AVAILABLE':
+                valid = result['state'] == 'SKIP'
+            else:
+                valid = (result['status'] == 'VALIDATED_PENDING_EXPLICIT_REGISTRATION'
+                         and result['state'] in ('PASS', 'WARN')
+                         and result['automatic_registration'] is False
+                         and result['manifest_entry_candidate']['session_date'] == self.session
+                         and result['manifest_entry_candidate']['source_metadata']['session'] == self.session)
+        elif schema == 'jpx-json-discovery-v1':
+            valid = result['status'] in ('HREF_DISCOVERED', 'NOT_YET_AVAILABLE') and result['pdf_requests'] == 0
+        else:
+            valid = False
+        if not valid:
+            raise ValueError('TERMINAL_RESULT_TYPE')
+        roles = ('listing', 'monthly_list', 'monthly')
+        if schema == 'jpx-historical-result-v1' and result['status'] == 'VALIDATED_PENDING_EXPLICIT_REGISTRATION':
+            roles += ('pdf',)
+        for key, operation in result['completed_requests'].items():
+            identity = {field: operation[field] for field in ('session', 'url', 'role')}
+            if (identity['session'] != self.session or identity['role'] not in roles
+                    or _canonical_request_url(identity['url']) != identity['url']
+                    or key != hashlib.sha256(core.canonical_bytes(identity)).hexdigest()
+                    or type(operation['attempts_started']) is not int or not 1 <= operation['attempts_started'] <= 3
+                    or date.fromisoformat(operation['observation_day']).isoformat() != operation['observation_day']):
+                raise ValueError('TERMINAL_REQUEST_IDENTITY')
+        return result
+
+    def validate_completion(self, budget, key, operation):
+        try:
+            receipt = core.read_frozen(lifecycle.verify_reference(operation['completion_reference']))
+            expected = dict(schema_version='jpx-request-completion-v1', policy_version=lifecycle.VERSION,
+                state='COMPLETED', session=self.session, request_key=key, canonical_url=operation['url'],
+                role=operation['role'], observation_day=budget['day'], attempts_started=operation['attempts_started'],
+                result_reference=operation['result_reference'], completed_at=receipt['completed_at'])
+            if core.canonical_bytes(receipt) != core.canonical_bytes(expected):
+                raise ValueError('COMPLETION_OWNERSHIP')
+            result = self.validate_terminal_result(core.read_frozen(
+                lifecycle.verify_reference(receipt['result_reference'])))
+            if (result['completed_at'] != receipt['completed_at']
+                    or core.canonical_bytes(result['completed_requests'].get(key)) !=
+                       core.canonical_bytes(self.completion_identity(budget, operation))
+                    or operation['role'] == 'pdf' and result['schema_version'] != 'jpx-historical-result-v1'):
+                raise ValueError('COMPLETION_OPERATION')
+        except (KeyError, TypeError, ValueError, AttributeError, OSError) as error:
+            # Untrusted completion must retain its budget and require review;
+            # it is neither a new observation nor an invented HARD_STOP.
+            raise ValueError('RETRY_INTERRUPTED_REVIEW_REQUIRED') from error
+
+    def terminal_metadata(self, schema='jpx-historical-result-v1'):
+        budget = self.budget()
+        return dict(schema_version=schema, policy_version=lifecycle.VERSION, completed_at=_now().isoformat(),
+                    completed_requests={key: self.completion_identity(budget, budget['requests'][key])
+                                        for key in sorted(self.request_keys)})
+
     def budget(self):
         """Unfinished operations retain their budget across run IDs and JPX days."""
         if self.stops is None:
             return None
-        targets = self.stops.index.setdefault('retry_targets', {})
+        targets = self.stops.index.get('retry_targets', {})
+        if not isinstance(targets, dict):
+            raise ValueError('RETRY_INTERRUPTED_REVIEW_REQUIRED')
         if self.observation_day is None:
             self.observation_day = _now().astimezone(ZoneInfo('Asia/Tokyo')).date().isoformat()
         day = self.observation_day  # Never reset a running operation at midnight.
         value = targets.get(self.session)
         completed = False
-        if value is not None and value.get('day') != day and value.get('in_flight') is False:
-            requests = value.get('requests')
-            completed = (isinstance(requests, dict) and bool(requests) and not value.get('exhausted')
-                         and all(item.get('state') == 'COMPLETED' and item.get('result_reference')
-                                 for item in requests.values()))
-            if completed:
-                # A state label alone cannot prove completion after a crash.
-                for item in requests.values():
-                    core.read_frozen(lifecycle.verify_reference(item['result_reference']))
-        if value is None or completed:
+        if self.session in targets:
+            self.validate_budget(value)
+            completed = (value['day'] != day and not value['in_flight'] and not value['exhausted']
+                         and bool(value['requests'])
+                         and all(item['state'] == 'COMPLETED' for item in value['requests'].values()))
+        if self.session not in targets or completed:
             value = dict(day=day, retry_count=0, exhausted=False, in_flight=False, requests={})
             targets[self.session] = value
+            self.stops.index['retry_targets'] = targets
         count = value['retry_count']
         if type(count) is not int or not 0 <= count <= 2:
             raise ValueError('INVALID_RETRY_BUDGET')
@@ -280,9 +405,28 @@ class RequestContext:
     def finalize_requests(self, result_path):
         """Full operation completion is distinct from receiving a 200 response."""
         if self.stops is not None and self.request_keys:
-            result = lifecycle.reference(result_path)
-            for key in self.request_keys:
-                self.budget()['requests'][key].update(state='COMPLETED', result_reference=result)
+            budget = self.budget()
+            result_ref = lifecycle.reference(result_path)
+            result = self.validate_terminal_result(core.read_frozen(lifecycle.verify_reference(result_ref)))
+            folder = self.stops.store / 'completions_v2'
+            folder.mkdir(exist_ok=True)
+            receipts = {}
+            for key in sorted(self.request_keys):
+                operation = budget['requests'][key]
+                if (operation['state'] != 'RESPONSE_RECEIVED'
+                        or result['completed_requests'].get(key) != self.completion_identity(budget, operation)):
+                    raise ValueError('RETRY_INTERRUPTED_REVIEW_REQUIRED')
+                path = folder / (uuid4().hex + '.json')
+                lifecycle.seal(path, dict(schema_version='jpx-request-completion-v1',
+                    policy_version=lifecycle.VERSION, state='COMPLETED', session=self.session,
+                    request_key=key, canonical_url=operation['url'], role=operation['role'],
+                    observation_day=budget['day'], attempts_started=operation['attempts_started'],
+                    result_reference=result_ref, completed_at=result['completed_at']))
+                receipts[key] = lifecycle.reference(path)
+            # All create-only receipts precede publishing COMPLETED in the index.
+            for key, receipt_ref in receipts.items():
+                budget['requests'][key].update(state='COMPLETED', result_reference=result_ref,
+                                                completion_reference=receipt_ref)
             self.stops.save()
 
     def commit_hard_failure(self, reason, *, evidence, refs=(), last_success=None, previous=None):
@@ -401,9 +545,9 @@ def _transient(error):
 
 class ChallengeControls(HTMLParser):
     """Strong widget controls or corroborating HTML security structures."""
-    WIDGET_TOKENS = {'g-recaptcha', 'h-captcha', 'cf-challenge', 'cf-turnstile',
-                     'cf-browser-verification', 'challenge-platform', 'bot-challenge',
-                     'security-challenge', 'human-verification'}
+    WIDGET_TOKENS = {'g-recaptcha', 'h-captcha', 'cf-challenge', 'cf-turnstile', 'cf-browser-verification'}
+    GENERIC_TOKENS = {'security-challenge', 'human-verification', 'browser-verification',
+                      'challenge', 'verification', 'challenge-platform', 'bot-challenge'}
     CAPTCHA_CONTROLS = {'captcha', 'captcha-form', 'captcha-widget', 'captcha-response',
                         'recaptcha', 'recaptcha-widget', 'recaptcha-response'}
     CONTROL_TAGS = {'div', 'span', 'form', 'iframe', 'input', 'button'}
@@ -418,25 +562,28 @@ class ChallengeControls(HTMLParser):
         self.inspect_scripts = inspect_scripts
 
     def text_break(self):
-        for _, _, parts in self.stack:
+        for _, _, _, parts in self.stack:
             parts.append(' ')
 
     def handle_starttag(self, tag, attrs):
         if tag in self.TEXT_BREAKS:
             self.text_break()
+        generic = False
         for key, value in attrs:  # Duplicate attributes cannot hide a widget marker.
             if not value:
                 continue
             if key in ('id', 'class', 'name'):
                 tokens = set(value.lower().split())
+                generic |= bool(tokens & self.GENERIC_TOKENS)
                 self.found |= bool(tokens & self.WIDGET_TOKENS or
                                    tag in self.CONTROL_TAGS and tokens & self.CAPTCHA_CONTROLS)
-            elif key in ('src', 'action') and tag in self.CONTROL_TAGS | {'script'}:
+            elif (key == 'action' and tag == 'form'
+                  or key == 'src' and tag in ('iframe', 'script', 'input')):
                 # Known provider endpoints or exact control path segments, never
                 # a substring such as "captcha-explanation" in a documentation URL.
                 self.found |= bool(re.search(
                     r'(?:^|/)(?:challenge-platform|security-challenge|bot-challenge|'
-                    r'human-verification|cf-browser-verification)(?:/|[?#]|$)|'
+                    r'human-verification|browser-verification|challenge|verification|cf-browser-verification)(?:/|[?#]|$)|'
                     r'(?:^|/)recaptcha/(?:api2|enterprise)(?:/|[?#]|$)|'
                     r'challenges\.cloudflare\.com/turnstile/|'
                     r'(?:[\w-]+\.)?hcaptcha\.com/(?:1/)?api\.js(?:[?#]|$)|'
@@ -446,16 +593,19 @@ class ChallengeControls(HTMLParser):
             r'access[-_]?(?:denied|restricted)|restriction|security[-_]alert',
             ' '.join(attrs.get(key) or '' for key in ('id', 'class')), re.I))
         if tag not in ListingHTML.VOID:
-            self.stack.append((tag, restriction, []))
+            # Generic identifiers need a verification control in their own
+            # element/subtree; documentation plus an ordinary Continue is safe.
+            self.stack.append((tag, restriction, generic, []))
         if tag == 'input' and (attrs.get('type') or '').lower() in ('submit', 'button'):
-            self.inspect_text('button', False, attrs.get('value') or '')
+            self.inspect_text('button', False, attrs.get('value') or '',
+                              generic_control=generic or any(node[2] for node in self.stack))
 
     def handle_data(self, text):
         # Preserve inline continuity (including split button labels); explicit
         # DOM line/block boundaries supply spaces. Script/style prose is not
         # visible semantic text, but known script widget controls are inspected.
-        if not any(tag in ('script', 'style') for tag, _, _ in self.stack):
-            for _, _, parts in self.stack:
+        if not any(tag in ('script', 'style') for tag, _, _, _ in self.stack):
+            for _, _, _, parts in self.stack:
                 parts.append(text)
         if self.inspect_scripts and self.stack and self.stack[-1][0] == 'script':
             # Known widget render calls or literal HTML written into the DOM are
@@ -468,7 +618,7 @@ class ChallengeControls(HTMLParser):
                 control.close()
                 self.found |= control.found
 
-    def inspect_text(self, tag, restriction, text):
+    def inspect_text(self, tag, restriction, text, *, generic_control=False):
         text = re.sub(r'\s+', ' ', text).strip()
         prompt = text.rstrip('.!?: ')
         challenge = bool(CHALLENGE.fullmatch(prompt))
@@ -481,6 +631,9 @@ class ChallengeControls(HTMLParser):
                 r'^(?:verify|continue|human[ -]check)$|'
                 r'verify.{0,30}(?:human|browser)|human\s+verification', text, re.I):
             self.signals.add('verification_control')
+        if (generic_control and tag == 'button' and re.fullmatch(
+                r'verify(?:\s+(?:human|browser))?|human[ -]check|human\s+verification', text, re.I)):
+            self.found = True
         # A standalone known prompt remains decisive; explanatory headings and
         # generic "verification required" need another structural signal.
         if tag in ('title', 'h1', 'form', 'iframe') and challenge:
@@ -489,8 +642,9 @@ class ChallengeControls(HTMLParser):
     def handle_endtag(self, tag):
         for index in range(len(self.stack) - 1, -1, -1):
             if self.stack[index][0] == tag:
-                for node_tag, restriction, parts in self.stack[index:]:
-                    self.inspect_text(node_tag, restriction, ''.join(parts))
+                for node_tag, restriction, _, parts in self.stack[index:]:
+                    self.inspect_text(node_tag, restriction, ''.join(parts),
+                                      generic_control=any(node[2] for node in self.stack))
                 del self.stack[index:]
                 break
         if tag in self.TEXT_BREAKS:
@@ -502,8 +656,9 @@ class ChallengeControls(HTMLParser):
 
     def close(self):
         super().close()
-        for tag, restriction, parts in self.stack:
-            self.inspect_text(tag, restriction, ''.join(parts))
+        for tag, restriction, _, parts in self.stack:
+            self.inspect_text(tag, restriction, ''.join(parts),
+                              generic_control=any(node[2] for node in self.stack))
         self.found |= len(self.signals) >= 2
 
 
@@ -932,6 +1087,7 @@ def _discover_json(root, session, *, transport, evidence_folder, _listing, conte
             link=link, redirect_chains=dict(listing=listing_chain, monthly_list=list_chain, monthly=month_chain),
             pdf_requests=0, warnings=warnings, retry_count=context.run.retries.get(session, 0),
             final_result='HREF_DISCOVERED' if link else 'NOT_YET_AVAILABLE')
+        receipt.update(context.terminal_metadata('jpx-json-discovery-v1'))
         frozen._seal(folder / 'discovery.json', receipt)
         context.warnings.extend(warnings)
         return receipt
@@ -1233,6 +1389,7 @@ def acquire_one(root, session, *, transport, resolution=None, run_state=None):
                                   listing_response_metadata=listing_chain, completed_at=_now().isoformat(),
                                   retry_count=run.retries.get(session, 0), final_result='NOT_YET_AVAILABLE',
                                   warnings=context.warnings, web_requests=context.count)
+                    result.update(context.terminal_metadata())
                     frozen._seal(folder / 'result.json', result)
                     context.finalize_requests(folder / 'result.json')
                     return result
@@ -1266,6 +1423,7 @@ def acquire_one(root, session, *, transport, resolution=None, run_state=None):
                           resumed_reference=resumed, completed_at=_now().isoformat(), web_requests=context.count,
                           retry_count=run.retries.get(session, 0), final_result='VALIDATED_PENDING_EXPLICIT_REGISTRATION',
                           aggregate=dict(validated_sessions=1, validated_tickers=6))
+            result.update(context.terminal_metadata())
             frozen._seal(folder / 'result.json', result)
             context.finalize_requests(folder / 'result.json')
             return result

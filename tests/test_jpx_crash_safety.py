@@ -263,7 +263,13 @@ class CrashSafetyTests(unittest.TestCase):
             d._request(Transport([response(self.f.pdf, PDF_URL, kind='application/pdf')]),
                        PDF_URL, 1000000, 3, context=context, role='pdf')
             result = self.f.root / 'completed.json'
-            policy.seal(result, dict(state='PASS'))
+            # Completion now requires a terminal result bound to these requests,
+            # rather than an arbitrary frozen PASS label.
+            policy.seal(result, dict(state='PASS', status='VALIDATED_PENDING_EXPLICIT_REGISTRATION',
+                final_result='VALIDATED_PENDING_EXPLICIT_REGISTRATION', session=SESSION,
+                acquisition_method=d.METHOD, automatic_registration=False,
+                manifest_entry_candidate=dict(session_date=SESSION, source_metadata=dict(session=SESSION)),
+                **context.terminal_metadata()))
             context.finalize_requests(result)
         budget = policy.Stops(self.f.store).index['retry_targets'][SESSION]
         self.assertEqual(budget['day'], NOW.date().isoformat())
