@@ -121,7 +121,11 @@ class Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             folder=Path(temp)/'evidence'; t=Transport([response(b'Access Denied',status=403)])
             with self.assertRaisesRegex(ValueError,'HTTP_403'): d.discover_json_one(self.isolated_root(temp),SESSION,transport=t,evidence_folder=folder)
-            self.assertEqual((folder/'listing.http1.body').read_bytes(),b'Access Denied')
+            # Response evidence is now written by the central security boundary.
+            self.assertEqual((folder/'request-0001.body').read_bytes(),b'Access Denied')
+            metadata = d.core.read_frozen(folder/'request-0001.json')
+            self.assertEqual(metadata['status'],403)
+            self.assertEqual(metadata['response_sha256'],d.core.sha256(folder/'request-0001.body'))
             self.assertTrue((folder/'failure.json').exists())
 
 if __name__=='__main__': unittest.main()

@@ -326,7 +326,7 @@ class ReviewRegressionTests(unittest.TestCase):
         result = d.acquire_one(self.f.root, SESSION, transport=exhausted, run_state=d.RunState('fresh'))
         self.assertEqual(result['retry_count'], 2)
         self.assertEqual(result['status'], 'SKIP_RETRY_EXHAUSTED')
-        self.assertEqual(len(exhausted.calls), 2)  # one new observation + only one remaining retry
+        self.assertEqual(len(exhausted.calls), 1)  # Same request already started twice; total attempts <= 3.
 
     def test_unknown_inflight_request_cannot_gain_new_initial_attempt(self):
         class Interrupted(Transport):

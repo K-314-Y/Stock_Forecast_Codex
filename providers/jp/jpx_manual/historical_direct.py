@@ -63,6 +63,28 @@ def official_url(value):
     return value
 
 
+def _canonical_request_url(url):
+    """Resource identity only; requests still use the exact observed official URL."""
+    parts = urlsplit(official_url(url))
+    def escapes(value):
+        def normalize(match):
+            character = chr(int(match[0][1:], 16))
+            return character if re.fullmatch(r'[A-Za-z0-9._~-]', character) else match[0].upper()
+        return re.sub(r'%[0-9A-Fa-f]{2}', normalize, value)
+    path = escapes(parts.path)
+    segments = []
+    for segment in path.split('/'):
+        if segment == '..':
+            if len(segments) > 1:
+                segments.pop()
+        elif segment != '.':
+            segments.append(segment)
+    normalized = '/'.join(segments) or '/'
+    if path.endswith(('/.', '/..')) and not normalized.endswith('/'):
+        normalized += '/'
+    return parts._replace(netloc=parts.hostname, path=normalized, query=escapes(parts.query)).geturl()
+
+
 @dataclass(frozen=True)
 class Response:
     url: str
@@ -103,8 +125,9 @@ class HTTPS:
                 # A body-read failure cannot erase a known restriction status.
                 if response.status in (401, 403, 429):
                     return Response(url, response.status, dict(pairs), partial)
-                if CHALLENGE.search(partial[:65536].decode('utf-8', errors='replace')):
-                    raise ValueError('SECURITY_CHALLENGE') from error
+                # Return the known response context with the transport failure;
+                # the central boundary classifies all received security controls.
+                error.response = Response(url, response.status, dict(pairs), partial)
                 raise
             if len(body) > limit and response.status not in (401, 403, 429):
                 raise ValueError('RESPONSE_TOO_LARGE')
@@ -162,16 +185,22 @@ class RequestContext:
     warnings: list = field(default_factory=list)
     stops: lifecycle.Stops | None = None
     stop_reference: dict | None = None
+    request_key: str | None = None
+    request_keys: set = field(default_factory=set)
+    observation_day: str | None = None
+    integrity_evidence: dict = field(default_factory=dict)
 
     def budget(self):
         """Same target budget survives run IDs; later normal JPX days are new observations."""
         if self.stops is None:
             return None
         targets = self.stops.index.setdefault('retry_targets', {})
-        day = _now().astimezone(ZoneInfo('Asia/Tokyo')).date().isoformat()
+        if self.observation_day is None:
+            self.observation_day = _now().astimezone(ZoneInfo('Asia/Tokyo')).date().isoformat()
+        day = self.observation_day  # Never reset a running operation at midnight.
         value = targets.get(self.session)
         if value is None or value['day'] != day and not value.get('in_flight'):
-            value = dict(day=day, retry_count=0, exhausted=False, in_flight=False)
+            value = dict(day=day, retry_count=0, exhausted=False, in_flight=False, requests={})
             targets[self.session] = value
         count = value['retry_count']
         if type(count) is not int or not 0 <= count <= 2:
@@ -179,7 +208,7 @@ class RequestContext:
         self.run.retries[self.session] = max(self.run.retries.get(self.session, 0), count)
         return value
 
-    def before_request(self, url):
+    def before_request(self, url, role):
         if self.run.blocked_hosts:
             raise ValueError('HARD_STOP_ACTIVE:' + next(iter(self.run.blocked_hosts.values())))
         if self.session in self.run.exhausted:
@@ -192,6 +221,20 @@ class RequestContext:
             raise ValueError('RETRY_EXHAUSTED')
         if budget['in_flight']:
             raise ValueError('RETRY_INTERRUPTED_REVIEW_REQUIRED')
+        # Older summaries cannot prove how many attempts an unfinished operation
+        # already made. Preserve their fail-closed review path, not a fresh budget.
+        if 'requests' not in budget and budget.get('url'):
+            raise ValueError('RETRY_INTERRUPTED_REVIEW_REQUIRED')
+        canonical_url = _canonical_request_url(url)
+        identity = dict(session=self.session, url=canonical_url, role=role)
+        key = hashlib.sha256(core.canonical_bytes(identity)).hexdigest()
+        requests = budget.setdefault('requests', {})
+        operation = requests.setdefault(key, dict(identity, attempts_started=0, state='PENDING'))
+        count = operation['attempts_started']
+        if type(count) is not int or not 0 <= count <= 3:
+            raise ValueError('INVALID_RETRY_BUDGET')
+        if count >= 3:
+            raise ValueError('RETRY_EXHAUSTED')
         deadlines = [value for value in (budget.get('retry_not_before'),
                      self.stops.index.get('host_retry_not_before')) if value]
         deadline = max(deadlines) if deadlines else None
@@ -200,18 +243,45 @@ class RequestContext:
             if delay:
                 time.sleep(delay)
         budget.update(in_flight=True, url=url, run_id=self.run.run_id)
+        operation.update(attempts_started=count + 1, state='IN_FLIGHT',
+                         last_attempt=dict(started_at=_now().isoformat(), run_id=self.run.run_id))
+        self.request_key = key
+        self.request_keys.add(key)
         self.stops.save()  # Unknown interrupted requests cannot gain a new initial attempt.
 
-    def completed_request(self):
+    def completed_request(self, metadata=None):
         if self.stops is not None:
             budget = self.budget()
             budget.update(in_flight=False)
             budget.pop('retry_not_before', None)
+            if self.request_key:
+                operation = budget['requests'][self.request_key]
+                operation.update(state='RESPONSE_RECEIVED', last_result=metadata)
             self.stops.save()
+
+    def finalize_requests(self, result_path):
+        """Full operation completion is distinct from receiving a 200 response."""
+        if self.stops is not None and self.request_keys:
+            result = lifecycle.reference(result_path)
+            for key in self.request_keys:
+                self.budget()['requests'][key].update(state='COMPLETED', result_reference=result)
+            self.stops.save()
+
+    def commit_hard_failure(self, reason, *, evidence, refs=(), last_success=None, previous=None):
+        """Safety state must not depend on completing a detailed failure log."""
+        if (self.stops is None or self.stop_reference is not None
+                or reason in ('RETRY_EXHAUSTED', 'RETRY_INTERRUPTED_REVIEW_REQUIRED')
+                or reason.startswith('HARD_STOP_ACTIVE')
+                or lifecycle.classification(reason, self.session)[0] != 'HARD_STOP'):
+            return
+        self.stop_reference = self.stops.stop(reason, self.session, evidence_refs=list(refs),
+            last_success=last_success, run_id=self.run.run_id,
+            retry_count=self.run.retries.get(self.session, 0),
+            previous_stop_reference=previous, evidence=evidence)
 
     def hard_stop(self, reason, *, metadata=None, body=None):
         if self.stops is not None and self.stop_reference is None:
-            refs = [lifecycle.reference(path) for path in sorted(self.folder.glob('request-*.json'))]
+            refs = []  # No fallible diagnostic reads before committing this STOP.
             evidence = None
             if metadata is not None:
                 name = 'request-' + str(self.count + 1).zfill(4)
@@ -240,7 +310,7 @@ class RequestContext:
                     os.fsync(stream.fileno())
             lifecycle.seal(self.folder / (name + '.json'), metadata)
 
-    def retry(self, response=None):
+    def retry(self, response=None, *, metadata=None, body=None):
         budget = self.budget()
         count = self.run.retries.get(self.session, 0)
         if type(count) is not int or not 0 <= count <= 2:
@@ -248,33 +318,50 @@ class RequestContext:
         if count >= 2:
             if budget is not None:
                 budget.update(exhausted=True, in_flight=False)
+                if self.request_key:
+                    budget['requests'][self.request_key].update(state='RETRY_EXHAUSTED', last_result=metadata)
                 self.stops.save()
             self.run.exhausted.add(self.session)
             self.run.save()
+            if metadata is not None:
+                self.capture(metadata, response.body if response is not None else body)
             raise ValueError('RETRY_EXHAUSTED')
         delay = 0
         if response is not None:
-            value = response.header('retry-after')
-            if value is None:
-                delay = 1
-            elif re.fullmatch(r'\d+', value.strip()):
-                delay = int(value.strip())
-            else:
-                try:
+            try:
+                value = response.header('retry-after')
+                if value is None:
+                    delay = 1
+                elif re.fullmatch(r'\d{1,10}', value.strip()):
+                    delay = int(value.strip())
+                else:
                     when = parsedate_to_datetime(value)
                     if when.tzinfo is None:
                         raise ValueError('RETRY_AFTER_INVALID')
                     delay = max(0, (when - _now()).total_seconds())
-                except (ValueError, TypeError, OverflowError) as error:
-                    raise ValueError('RETRY_AFTER_INVALID') from error
+                if delay > 2 ** 31 - 1:
+                    raise ValueError('RETRY_AFTER_INVALID')
+                # No shorter policy wait cap exists. Reject instructions that
+                # cannot be represented as an absolute deadline; never truncate.
+                deadline = datetime.fromtimestamp(_now().timestamp() + delay, timezone.utc).isoformat()
+            except (ValueError, TypeError, OverflowError, OSError) as error:
+                self.hard_stop('RETRY_AFTER_INVALID', metadata=metadata, body=response.body)
+                raise ValueError('RETRY_AFTER_INVALID') from error
         self.run.retries[self.session] = count + 1
         if budget is not None:
             budget.update(retry_count=count + 1, in_flight=False,
                           retry_not_before=datetime.fromtimestamp(_now().timestamp() + delay, timezone.utc).isoformat())
             if response is not None:
-                self.stops.index['host_retry_not_before'] = budget['retry_not_before']
+                self.stops.index['host_retry_not_before'] = deadline
+                self.stops.index['rate_limited_hosts'] = ['jpx.co.jp']
+            if self.request_key:
+                budget['requests'][self.request_key].update(state='RETRY', last_result=metadata)
             self.stops.save()
+        if response is not None:
+            self.run.rate_limited_hosts.add('jpx.co.jp')
         self.run.save()  # Reserve before sleeping/requesting; interruption cannot reset it.
+        if metadata is not None:
+            self.capture(metadata, response.body if response is not None else body)
         if self.folder is not None:
             frozen._seal(self.folder / ('retry-' + str(count + 1) + '.json'),
                          dict(state='RETRY', target=self.session, retry_count=count + 1,
@@ -295,38 +382,95 @@ def _transient(error):
 
 
 class ChallengeControls(HTMLParser):
-    """Recognizable challenge widgets, not keyword matches in ordinary prose."""
-    def __init__(self):
+    """Strong widget controls or corroborating HTML security structures."""
+    def __init__(self, *, inspect_scripts=True):
         super().__init__(convert_charrefs=True)
         self.found = False
+        self.stack = []
+        self.signals = set()
+        self.inspect_scripts = inspect_scripts
 
     def handle_starttag(self, tag, attrs):
-        for key, value in attrs:
+        for key, value in attrs:  # Duplicate attributes cannot hide a widget marker.
             if key in ('id', 'class', 'name', 'src', 'action') and value:
                 self.found |= bool(re.search(r'(?:g-recaptcha|h-captcha|recaptcha|cf-challenge|cf-turnstile|'
                     r'cf-browser-verification|challenge-platform|bot-challenge|security-challenge|'
-                    r'human-verification|(?:^|[\s_-])captcha(?:$|[\s_-]))', value, re.I))
+                    r'human-verification|challenges\.cloudflare\.com/turnstile/|'
+                    r'hcaptcha\.com/(?:1/)?api\.js|(?:^|[\s_-])captcha(?:$|[\s_-]))', value, re.I))
+        attrs = dict(attrs)
+        restriction = attrs.get('role') == 'alert' or bool(re.search(
+            r'access[-_]?(?:denied|restricted)|restriction|security[-_]alert',
+            ' '.join(attrs.get(key) or '' for key in ('id', 'class')), re.I))
+        if tag not in ListingHTML.VOID:
+            self.stack.append((tag, restriction, []))
+        if tag == 'input' and attrs.get('type', '').lower() in ('submit', 'button'):
+            self.inspect_text('button', False, attrs.get('value') or '')
 
-    handle_startendtag = handle_starttag
+    def handle_data(self, text):
+        for _, _, parts in self.stack:
+            parts.append(text)
+        if self.inspect_scripts and self.stack and self.stack[-1][0] == 'script':
+            # Known widget render calls or literal HTML written into the DOM are
+            # structured controls. Do not evaluate JS or match descriptive words.
+            if re.search(r'\b(?:grecaptcha|hcaptcha|turnstile)\s*\.\s*(?:render|execute)\s*\(', text):
+                self.found = True
+            for match in re.finditer(r'''\bdocument\s*\.\s*write(?:ln)?\s*\(\s*(["'])(.*?)\1\s*\)''', text, re.S):
+                control = ChallengeControls(inspect_scripts=False)
+                control.feed(match[2])
+                control.close()
+                self.found |= control.found
+
+    def inspect_text(self, tag, restriction, text):
+        text = re.sub(r'\s+', ' ', text).strip()
+        challenge = bool(CHALLENGE.search(text))
+        restricted = bool(re.search(r'access\s+(?:restricted|denied)|verification\s+required', text, re.I))
+        if restriction and (challenge or restricted):
+            self.signals.add('restriction')
+        if tag in ('title', 'h1', 'h2') and (challenge or restricted):
+            self.signals.add('heading')
+        if tag in ('button', 'form') and re.search(
+                r'^(?:verify|continue|human[ -]check)$|'
+                r'verify.{0,30}(?:human|browser)|human\s+verification', text, re.I):
+            self.signals.add('verification_control')
+        # A standalone known prompt remains decisive; explanatory headings and
+        # generic "verification required" need another structural signal.
+        if tag in ('title', 'h1', 'form', 'iframe') and CHALLENGE.fullmatch(text.rstrip('.!?: ')):
+            self.found = True
+
+    def handle_endtag(self, tag):
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index][0] == tag:
+                for node_tag, restriction, parts in self.stack[index:]:
+                    self.inspect_text(node_tag, restriction, ''.join(parts))
+                del self.stack[index:]
+                break
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def close(self):
+        super().close()
+        for tag, restriction, parts in self.stack:
+            self.inspect_text(tag, restriction, ''.join(parts))
+        self.found |= len(self.signals) >= 2
 
 
 def _challenge(response):
-    prefix = response.body[:65536]
-    # HTML widgets can occur below a long ordinary header. Transport byte limits
-    # already bound these bodies; PDF prose needs only the structural prefix scan.
-    html_body = response.content_type() == 'text/html' or re.search(br'<(?:!doctype\s+html|html)\b', prefix, re.I)
-    text = (response.body if html_body or response.status != 200 else prefix).decode('utf-8', errors='replace')
-    if response.status != 200:
-        return bool(CHALLENGE.search(text))
+    # Transport size limits bound the entire received body, including claimed
+    # PDFs. A late HTML widget must not be hidden by MIME or a PDF prefix.
+    text = response.body.decode('utf-8', errors='replace')
     # Inspect recognizable HTML controls even if MIME/magic claims PDF. Ordinary
     # prose (including extracted PDF text) containing a word is not a control.
     controls_parser = ChallengeControls()
     controls_parser.feed(text)
+    controls_parser.close()
     if controls_parser.found:
         return True
-    controls = re.findall(r'<(?:title|h1|form|iframe)\b[^>]*>.*?</(?:title|h1|form|iframe)>', text, re.I | re.S)
-    if any(CHALLENGE.search(value) for value in controls):
-        return True
+    if CHALLENGE.fullmatch(text.strip()):
+        return True  # A bare restriction banner, including a partial read.
+    if response.status != 200:
+        return bool(CHALLENGE.search(text))
     if response.content_type() != 'text/html' and not response.body.startswith(b'%PDF-'):
         return bool(CHALLENGE.search(text))
     if response.body.startswith(b'%PDF-') and CHALLENGE.search(text):
@@ -338,14 +482,14 @@ def _challenge(response):
     return False
 
 
-def _request(transport, url, limit, max_redirects, chain=(), seen=(), *, context=None):
+def _request(transport, url, limit, max_redirects, chain=(), seen=(), *, context=None, role='listing'):
     context = context or RequestContext()
     official_url(url)  # Validate BEFORE contacting even a redirect destination.
     if url in seen:
         raise ValueError('REDIRECT_CYCLE')
     host = 'jpx.co.jp'  # Both official names share the same restriction boundary.
     while True:
-        context.before_request(url)
+        context.before_request(url, role)
         if host in context.run.blocked_hosts:
             raise ValueError('HARD_STOP_ACTIVE:' + context.run.blocked_hosts[host])
         if context.session in context.run.exhausted:
@@ -359,16 +503,23 @@ def _request(transport, url, limit, max_redirects, chain=(), seen=(), *, context
             metadata = dict(url=url, started_at=start.isoformat(), completed_at=end.isoformat(),
                             result=type(error).__name__, reason=str(error),
                             partial_sha256=hashlib.sha256(partial).hexdigest() if partial is not None else None)
+            observed_response = getattr(error, 'response', None)
+            if observed_response is not None and _challenge(observed_response):
+                metadata.update(status=observed_response.status, headers=observed_response.headers)
+                context.hard_stop('SECURITY_CHALLENGE', metadata=metadata, body=observed_response.body)
+                raise ValueError('SECURITY_CHALLENGE') from error
             if str(error).split(':', 1)[0] in lifecycle.HOST_CODES:
                 context.hard_stop(str(error).split(':', 1)[0], metadata=metadata, body=partial)
                 raise
-            context.capture(metadata, partial)
             if start.tzinfo is None or end.tzinfo is None or end < start:
+                context.commit_hard_failure('ACQUISITION_CLOCK_INVALID', evidence=metadata)
                 raise ValueError('ACQUISITION_CLOCK_INVALID') from error
             if not _transient(error):
-                context.completed_request()
+                context.commit_hard_failure(str(error), evidence=metadata)
+                context.completed_request(metadata)
+                context.capture(metadata, partial)
                 raise
-            context.retry()
+            context.retry(metadata=metadata, body=partial)
             continue
         end = _now()
         metadata = dict(url=url, started_at=start.isoformat(), completed_at=end.isoformat(),
@@ -387,11 +538,29 @@ def _request(transport, url, limit, max_redirects, chain=(), seen=(), *, context
         if response.status == 429 and (host in streak or context.run.retries.get(context.session, 0) >= 2):
             context.hard_stop('HOST_PERSISTENT_429', metadata=metadata, body=response.body)
             raise ValueError('HOST_PERSISTENT_429')
-        context.capture(metadata, response.body)
         if start.tzinfo is None or end.tzinfo is None or end < start:
+            context.commit_hard_failure('ACQUISITION_CLOCK_INVALID', evidence=metadata)
             raise ValueError('ACQUISITION_CLOCK_INVALID')
         if len(response.body) > limit:
+            context.commit_hard_failure('RESPONSE_TOO_LARGE', evidence=metadata)
             raise ValueError('RESPONSE_TOO_LARGE')
+        target = None
+        try:
+            if response.status in (301, 302, 303, 307, 308):
+                location = response.header('location')
+                if not location or len(chain) + 1 > max_redirects:
+                    raise ValueError('REDIRECT_LIMIT_OR_LOCATION_INVALID')
+                target = official_url(urljoin(url, location))
+                if target in (*seen, url):
+                    raise ValueError('REDIRECT_CYCLE')
+            elif response.status not in (200, 429):
+                raise ValueError('UNEXPECTED_HTTP_STATUS:' + str(response.status))
+            elif response.status == 200 and response.header('content-encoding') not in (None, 'identity'):
+                raise ValueError('UNEXPECTED_CONTENT_ENCODING')
+        except ValueError as error:
+            # Header-visible safety failures are known before any response log.
+            context.hard_stop(str(error), metadata=metadata, body=response.body)
+            raise
         if response.status != 429:
             if response.status == 200:
                 context.run.rate_limited_hosts.discard(host)
@@ -400,39 +569,19 @@ def _request(transport, url, limit, max_redirects, chain=(), seen=(), *, context
                     context.stops.index.pop('host_retry_not_before', None)
                     context.stops.save()
                 context.run.save()
-            context.completed_request()
+            context.completed_request(metadata)
+            context.capture(metadata, response.body)
             break
-        context.run.rate_limited_hosts.add(host)
-        if context.stops is not None:
-            context.stops.index['rate_limited_hosts'] = [host]
-            context.stops.save()
-        context.run.save()
         try:
-            context.retry(response)
+            context.retry(response, metadata=metadata)
         except ValueError as error:
             if str(error) == 'RETRY_EXHAUSTED':
                 context.hard_stop('HOST_PERSISTENT_429')
                 raise ValueError('HOST_PERSISTENT_429') from error
             raise
     chain = (*chain, metadata)
-    if response.status in STOP_STATUSES:
-        raise ValueError(STOP_STATUSES[response.status])
-    if response.status in (301, 302, 303, 307, 308):
-        if response.content_type() == 'text/html' and CHALLENGE.search(response.body[:65536].decode('utf-8', errors='replace')):
-            raise ValueError('SECURITY_CHALLENGE')
-        location = response.header('location')
-        if not location or len(chain) > max_redirects:
-            raise ValueError('REDIRECT_LIMIT_OR_LOCATION_INVALID')
-        try:
-            target = official_url(urljoin(url, location))
-        except ValueError:
-            context.hard_stop('NON_OFFICIAL_HTTPS_URL')
-            raise
-        return _request(transport, target, limit, max_redirects, chain, (*seen, url), context=context)
-    if response.status != 200:
-        raise ValueError('UNEXPECTED_HTTP_STATUS:' + str(response.status))
-    if response.header('content-encoding') not in (None, 'identity'):
-        raise ValueError('UNEXPECTED_CONTENT_ENCODING')
+    if target is not None:
+        return _request(transport, target, limit, max_redirects, chain, (*seen, url), context=context, role=role)
     return response, list(chain)
 
 
@@ -674,8 +823,10 @@ def discover_json_one(root, session, *, transport, evidence_folder, run_state=No
         run.bind(store)
         context = RequestContext(run, session, Path(evidence_folder), stops=stops)
         try:
-            return _discover_json(root, session, transport=transport, evidence_folder=evidence_folder,
-                                  _listing=None, context=context)
+            result = _discover_json(root, session, transport=transport, evidence_folder=evidence_folder,
+                                    _listing=None, context=context)
+            context.finalize_requests(Path(evidence_folder) / 'discovery.json')
+            return result
         except FileExistsError:
             raise
         except Exception as error:
@@ -695,21 +846,10 @@ def _discover_json(root, session, *, transport, evidence_folder, _listing, conte
     folder = Path(evidence_folder)
     folder.mkdir()  # Every diagnostic attempt has a fresh create-only folder.
     def fetch(label, url):
-        class EvidenceTransport:
-            count = 0
-            def get(self, target, *, limit):
-                started = _now().isoformat()
-                response = transport.get(target, limit=limit)
-                completed = _now().isoformat()
-                self.count += 1
-                name = label + '.http' + str(self.count)
-                with (folder / (name + '.body')).open('xb') as stream:
-                    stream.write(response.body)
-                frozen._seal(folder / (name + '.json'), dict(url=target, status=response.status,
-                    headers=response.headers, started_at=started, completed_at=completed,
-                    sha256=hashlib.sha256(response.body).hexdigest()))
-                return response
-        response, chain = _request(EvidenceTransport(), url, policy['max_listing_bytes'], policy['max_redirects'], context=context)
+        # All attempt evidence is captured at the central boundary, after safety
+        # state. No wrapper may log a response before its security classification.
+        response, chain = _request(transport, url, policy['max_listing_bytes'], policy['max_redirects'],
+                                   context=context, role=label)
         with (folder / (label + '.body')).open('xb') as stream:
             stream.write(response.body)
         frozen._seal(folder / (label + '.response.json'), dict(url=response.url, chain=chain,
@@ -748,6 +888,8 @@ def _discover_json(root, session, *, transport, evidence_folder, _listing, conte
         context.warnings.extend(warnings)
         return receipt
     except Exception as e:
+        context.commit_hard_failure(str(e), evidence=dict(reason=str(e), session=session,
+            acquisition_method=METHOD, failed_at=_now().isoformat(), attempt=str(folder)))
         frozen._seal(folder / 'failure.json', dict(reason=str(e), automatic_retry=False, pdf_requests=0,
             retry_count=context.run.retries.get(session, 0), final_result=str(e).split(':', 1)[0],
             attempt_refs=[lifecycle.reference(path) for path in sorted(context.folder.glob('request-*.json'))]))
@@ -907,7 +1049,9 @@ def _verified_acquisition(folder, session):
     return receipt, raw
 
 
-def _candidate(folder, receipt, raw, session, calendar):
+def _candidate(folder, receipt, raw, session, calendar, *, context=None):
+    if context is not None:
+        context.integrity_evidence.update(source_sha256=receipt['raw_sha256'], expected_session=session)
     parsed = parser.parse(raw, session, acquisition_method=METHOD)
     frozen._seal(folder / 'parsed.json', parsed)
     entry = dict(session_date=session, filename=raw.name, sha256=receipt['raw_sha256'],
@@ -917,6 +1061,12 @@ def _candidate(folder, receipt, raw, session, calendar):
                  normalized_output_sha256=core.sha256(folder / 'parsed.json'),
                  source_metadata=receipt, manual_review=True, eligible_for_trash=False,
                  scoring_status='NOT_RUN', forecast_ids=[], corporate_action_flag='UNKNOWN')
+    if context is not None:
+        # These hashes are already available for required validation. Retain them
+        # in memory so a HARD failure needs no diagnostic reads before its STOP.
+        context.integrity_evidence.update(parsed_source_sha256=parsed.get('source_file_hash'),
+            parsed_source_sha256_after=parsed.get('source_file_hash_after'), parsed_session=parsed.get('session_date'),
+            parsed_reference=dict(path=entry['normalized_output_path'], sha256=entry['normalized_output_sha256']))
     gap.stage_existing_pdf(folder / 'parsed.json', dict(entries=[entry]), calendar,
                            raw.parent, folder / 'validated_layer.json', allowed_sessions=[session])
     return entry
@@ -1011,13 +1161,13 @@ def acquire_one(root, session, *, transport, resolution=None, run_state=None):
                 receipt = dict(receipt, reused_acquisition_reference=lifecycle.reference(source_folder / 'acquisition.json'))
                 frozen._seal(folder / 'acquisition.json', receipt)
                 last_success = lifecycle.reference(folder / 'acquisition.json')
-                entry = _candidate(folder, receipt, raw, session, calendar)
+                entry = _candidate(folder, receipt, raw, session, calendar, context=context)
                 validating_evidence = False  # A receipt write failure keeps SOFT; it is not a new semantic conflict.
                 resumed = stops.resume(active, resolution_ref, evidence_validation='PASS', run_id=run.run_id,
                                        retry_count=run.retries.get(session, 0), attempt=folder)
             else:
                 listing, listing_chain = _request(transport, LISTING, policy['max_listing_bytes'],
-                                                  policy['max_redirects'], context=context)
+                                                  policy['max_redirects'], context=context, role='listing')
                 with (folder / 'listing.html').open('xb') as stream:
                     stream.write(listing.body)
                 dom = ListingHTML(listing.body.decode('utf-8-sig'))
@@ -1036,9 +1186,10 @@ def acquire_one(root, session, *, transport, resolution=None, run_state=None):
                                   retry_count=run.retries.get(session, 0), final_result='NOT_YET_AVAILABLE',
                                   warnings=context.warnings, web_requests=context.count)
                     frozen._seal(folder / 'result.json', result)
+                    context.finalize_requests(folder / 'result.json')
                     return result
                 response, pdf_chain = _request(transport, link['resolved_pdf_url'], policy['max_pdf_bytes'],
-                                               policy['max_redirects'], context=context)
+                                               policy['max_redirects'], context=context, role='pdf')
                 validate_pdf(response, warnings=context.warnings)
                 # Local filename is never used to construct a retrieval URL.
                 raw = folder / ('stq_' + session.replace('-', '') + '.pdf')
@@ -1060,7 +1211,7 @@ def acquire_one(root, session, *, transport, resolution=None, run_state=None):
                     raise ValueError('ACQUISITION_CLOCK_INVALID')
                 frozen._seal(folder / 'acquisition.json', receipt)
                 last_success = lifecycle.reference(folder / 'acquisition.json')
-                entry = _candidate(folder, receipt, raw, session, calendar)
+                entry = _candidate(folder, receipt, raw, session, calendar, context=context)
             result = dict(status='VALIDATED_PENDING_EXPLICIT_REGISTRATION', state='WARN' if receipt.get('warnings') else 'PASS',
                           session=session, acquisition_method=METHOD, acquisition_sha256=core.sha256(folder / 'acquisition.json'),
                           manifest_entry_candidate=entry, automatic_registration=False, warnings=receipt.get('warnings', []),
@@ -1068,6 +1219,7 @@ def acquire_one(root, session, *, transport, resolution=None, run_state=None):
                           retry_count=run.retries.get(session, 0), final_result='VALIDATED_PENDING_EXPLICIT_REGISTRATION',
                           aggregate=dict(validated_sessions=1, validated_tickers=6))
             frozen._seal(folder / 'result.json', result)
+            context.finalize_requests(folder / 'result.json')
             return result
         except FileExistsError:
             raise
@@ -1078,12 +1230,17 @@ def acquire_one(root, session, *, transport, resolution=None, run_state=None):
                            run_id=run.run_id, retry_count=run.retries.get(session, 0))
             kind, _, _ = lifecycle.classification(str(error), session)
             integrity_conflict = validating_evidence or str(error) == 'STOP_EVIDENCE_HASH_CONFLICT'
-            if (active is not None and kind == 'HARD_STOP' and integrity_conflict
-                    and not str(error).startswith('HARD_STOP_ACTIVE') and context.stop_reference is None):
-                context.stop_reference = stops.stop(str(error), session,
-                    evidence_refs=[active['reference'], *active['record']['evidence_refs']],
-                    last_success=last_success, run_id=run.run_id, retry_count=run.retries.get(session, 0),
-                    previous_stop_reference=active['reference'], evidence=failure)
+            if active is None or integrity_conflict:
+                refs = ([active['reference'], *active['record']['evidence_refs']] if active else [])
+                if last_success:
+                    refs.append(last_success)
+                    failure['acquisition_reference'] = last_success
+                if context.integrity_evidence:
+                    failure['integrity'] = context.integrity_evidence
+                    if context.integrity_evidence.get('parsed_reference'):
+                        refs.append(context.integrity_evidence['parsed_reference'])
+                context.commit_hard_failure(str(error), refs=refs, last_success=last_success,
+                    previous=active['reference'] if active else None, evidence=failure)
             refs = []
             if folder is not None:
                 failure['attempt_refs'] = [lifecycle.reference(path) for path in sorted(folder.glob('request-*.json'))]
