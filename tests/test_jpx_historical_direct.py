@@ -387,14 +387,44 @@ class AcquisitionTests(unittest.TestCase):
             parser.parse(Path('/unused.pdf'), SESSION, direct.METHOD, 'GOOGLE_CHROME_VISIBLE_RDC')
 
     def test_soft_resume_revalidates_real_parser_without_download(self):
-        with patch.object(direct.gap, 'stage_existing_pdf', side_effect=ValueError('MANIFEST_NOT_VALIDATED')):
-            with self.assertRaisesRegex(ValueError, 'MANIFEST_NOT_VALIDATED'):
-                self.valid_acquisition()
+        # Exercise a real metadata failure and its actual validator, rather than
+        # making the validator throw or deriving PASS from a claimed string.
+        fix = self.root / 'config/test_manifest_metadata.json'
+        fix.write_text('{"parser_status":"FAIL"}')
+        old_fix_hash = core.sha256(fix)
+        validator = direct.gap.stage_existing_pdf
+        def metadata_adapter(parsed, manifest, *args, **kwargs):
+            entries = [dict(entry, parser_status=json.loads(fix.read_bytes())['parser_status'])
+                       for entry in manifest['entries']]
+            return validator(parsed, dict(entries=entries), *args, **kwargs)
+        adapter = patch.object(direct.gap, 'stage_existing_pdf', side_effect=metadata_adapter)
+        adapter.start()
+        self.addCleanup(adapter.stop)
+        with self.assertRaisesRegex(ValueError, 'MANIFEST_NOT_VALIDATED'):
+            self.valid_acquisition()
         store = self.root / 'data/jpx_historical_direct'
         item = direct.lifecycle.Stops(store).index['active'][0]
-        fixes = [direct.lifecycle.reference(self.root / 'config/jpx_daily_acquisition_config.json')]
+        old_stop = Path(item['reference']['path']).read_bytes()
+        fix.write_text('{"parser_status":"PASS"}')
+        self.assertNotEqual(core.sha256(fix), old_fix_hash)
+        fixes = [direct.lifecycle.reference(fix)]
+        calendar = json.loads((self.root / 'analysis/calendar_validation_2026-09-12.json').read_bytes())
+        receipt, raw = direct._verified_acquisition(store / '2026-09-15', '2026-09-15')
+        checks = {}
+        for check in ('fixture', 'regression'):
+            folder = self.root / check
+            folder.mkdir()
+            entry = direct._candidate(folder, receipt, raw, '2026-09-15', calendar)
+            parsed = core.read_frozen(folder / 'parsed.json')
+            layer = json.loads((folder / 'validated_layer.json').read_bytes())
+            self.assertEqual(layer['core6_count'], 6)
+            self.assertEqual(parsed['normalized_schema_validation'], 'PASS')
+            self.assertEqual(entry['sha256'], core.sha256(raw))
+            checks[check] = parsed['normalized_schema_validation']
         report = self.root / 'regression.json'
-        probe._seal(report, dict(status='PASS', checks=dict(fixture='PASS', regression='PASS'), fix_refs=fixes))
+        probe._seal(report, dict(status=parsed['normalized_schema_validation'], checks=checks, fix_refs=fixes,
+                               validation_outputs=[direct.lifecycle.reference(self.root / check / 'parsed.json')
+                                                   for check in checks]))
         resolution = self.root / 'resolution.json'
         probe._seal(resolution, dict(stop_reference=item['reference'], scope='session', target='2026-09-15',
             root_cause='Local manifest validation bug fixed', scope_isolation='PASS', fix_refs=fixes,
@@ -405,6 +435,23 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(result['aggregate']['validated_tickers'], 6)
         self.assertFalse(transport.calls)
         self.assertEqual(direct.lifecycle.read_reference(result['resumed_reference'])['state'], 'RESUMED')
+        self.assertEqual(Path(item['reference']['path']).read_bytes(), old_stop)
+        self.assertEqual(direct.lifecycle.Stops(store).index['resumed'][0]['resume_event_reference'], result['resumed_reference'])
+
+    def test_real_pdf_parser_octet_stream_warns_after_full_validation(self):
+        self.policy['historical_direct']['allowed_sessions'] = ['2026-09-15']
+        self.policy['historical_direct']['forecast_target'] = '2026-09-18'
+        self.save_policy()
+        transport = MockTransport([response(listing('2026-09-15')),
+                                   response(self.pdf, url=PDF_URL, content_type='binary/octet-stream')])
+        result = direct.acquire_one(self.root, '2026-09-15', transport=transport)
+        self.assertEqual(result['state'], 'WARN')
+        self.assertEqual(result['aggregate']['validated_tickers'], 6)
+        entry = result['manifest_entry_candidate']
+        self.assertEqual(entry['source_metadata']['content_type'], 'binary/octet-stream')
+        self.assertEqual(core.read_frozen(Path(entry['normalized_output_path']))['normalized_schema_validation'], 'PASS')
+        self.assertEqual(direct.acquire_one(self.root, '2026-09-15', transport=transport)['local_validation'], 'PASS')
+        self.assertEqual(len(transport.calls), 2)
 
 
 if __name__ == '__main__':

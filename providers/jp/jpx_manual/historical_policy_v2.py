@@ -79,6 +79,29 @@ def write_current(path, index):
             os.unlink(name)
 
 
+def seal(path, record):
+    """Historical evidence: atomic create-only files and durable directory entries.
+
+    Unlike frozen._seal, publish each complete file through a hard link. A crash
+    between record and sidecar is detected by read_frozen, never treated as PASS.
+    """
+    path = Path(path)
+    data = core.canonical_bytes(record)
+    for target, payload in ((path, data), (path.with_suffix('.sha256'),
+                            (hashlib.sha256(data).hexdigest() + '\n').encode())):
+        fd, name = tempfile.mkstemp(prefix='.evidence-', dir=path.parent)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(name, target)  # EEXIST; never replace prior evidence.
+            frozen._sync_dir(path.parent)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
+
+
 class Stops:
     def __init__(self, store):
         self.store = Path(store).resolve()
@@ -91,7 +114,32 @@ class Stops:
         else:
             if (self.store / 'stops_v2').exists():
                 raise ValueError('STOP_INDEX_MISSING_REVIEW_REQUIRED')
-            self.index = dict(policy_version=VERSION, active=[], legacy=None)
+            self.index = dict(policy_version=VERSION, active=[], legacy=None, resumed=[])
+        if 'resumed' not in self.index:
+            # Older releases without a referenced receipt cannot prove their state.
+            if (any((self.store / 'stops_v2').glob('resume-*.json'))
+                    or self.index['legacy'] is not None and not any(
+                        item['reference'] == self.index['legacy'] for item in self.index['active'])):
+                raise ValueError('STOP_RESUME_HISTORY_MISSING_REVIEW_REQUIRED')
+            self.index['resumed'] = []
+        for release in self.index['resumed']:
+            try:
+                event = core.read_frozen(verify_reference(release['resume_event_reference']))
+                previous = read_reference(release['previous_stop_reference'])
+                resolution = read_reference(release['resolution_reference'])
+                previous_kind = previous.get('stop_class')
+                if previous_kind is None:
+                    previous_kind, scope, target = classification(previous.get('reason', ''), previous.get('session'))
+                    if (scope, target) != (release['scope'], release['target']):
+                        raise ValueError('invalid legacy release scope')
+                if (event.get('state') != 'RESUMED' or event.get('evidence_validation') != 'PASS'
+                        or any(event.get(key) != release[key] for key in
+                               ('previous_stop_reference', 'resolution_reference', 'scope', 'target'))
+                        or previous_kind != 'SOFT_STOP'
+                        or resolution.get('stop_reference') != release['previous_stop_reference']):
+                    raise ValueError('invalid release lineage')
+            except (ValueError, OSError, KeyError, TypeError) as error:
+                raise ValueError('STOP_RESUME_RECEIPT_CONFLICT') from error
         legacy = self.store / 'STOP.json'
         if self.index['legacy'] is not None:
             verify_reference(self.index['legacy'])  # Removal/edit is never a release.
@@ -130,8 +178,12 @@ class Stops:
                     raise ValueError('STOP_EVIDENCE_HASH_CONFLICT')
             else:
                 raw = verify_reference(item['reference'])
-            if not item['record'].get('legacy') and json.loads(raw.read_bytes()) != item['record']:
-                raise ValueError('STOP_INDEX_RECORD_CONFLICT')
+            if not item['record'].get('legacy'):
+                try:
+                    if core.read_frozen(raw) != item['record']:
+                        raise ValueError('STOP_INDEX_RECORD_CONFLICT')
+                except (OSError, ValueError) as error:
+                    raise ValueError('STOP_EVIDENCE_HASH_CONFLICT') from error
             if item['record']['scope'] not in ('ticker', 'session', 'host', 'global'):
                 raise ValueError('STOP_SCOPE_INVALID')
 
@@ -142,18 +194,21 @@ class Stops:
         return [item for item in self.index['active'] if item['record']['scope'] in ('host', 'global')
                 or item['record']['target'] == session]
 
-    def gate(self, session, resolution=None):
+    def gate(self, session, resolution=None, *, network=True):
         active = self.applicable(session)
-        hard = [item for item in active if item['record']['stop_class'] != 'SOFT_STOP']
+        hard = [item for item in active if item['record']['stop_class'] != 'SOFT_STOP'
+                and (network or item['record']['scope'] != 'host')]
         if hard:
             raise ValueError('HARD_STOP_ACTIVE:' + hard[0]['record']['stop_code'])
+        active = [item for item in active if item['record']['stop_class'] == 'SOFT_STOP']
         if active and resolution is None:
             raise ValueError('SOFT_STOP_RESOLUTION_REQUIRED:' + active[0]['record']['stop_code'])
         if len(active) > 1:
             raise ValueError('MULTIPLE_STOP_RESOLUTIONS_REQUIRED')
         return active[0] if active else None
 
-    def stop(self, reason, session, *, evidence_refs, last_success, run_id, retry_count):
+    def stop(self, reason, session, *, evidence_refs, last_success, run_id, retry_count,
+             previous_stop_reference=None, evidence=None):
         kind, scope, target = classification(reason, session)
         record = dict(policy_version=VERSION, stop_id=uuid4().hex, stop_code=reason.split(':', 1)[0],
                       reason=reason, stop_class=kind, scope=scope, target=target, session=session,
@@ -161,6 +216,10 @@ class Stops:
                       recoverability=kind, state='ACTIVE', run_id=run_id, retry_count=retry_count,
                       resume_condition='Root cause/fix/fixture/regression PASS; scope isolated; evidence revalidation PASS'
                       if kind == 'SOFT_STOP' else 'Human review or independently verified external change; no automatic resume')
+        if previous_stop_reference:
+            record['previous_stop_reference'] = previous_stop_reference
+        if evidence is not None:
+            record['evidence'] = json.loads(core.canonical_bytes(evidence))
         folder = self.store / 'stops_v2'
         folder.mkdir(exist_ok=True)
         path = self.store / 'STOP.json' if not (self.store / 'STOP.json').exists() else folder / (record['stop_id'] + '.json')
@@ -169,7 +228,7 @@ class Stops:
         if path.name == 'STOP.json':
             self.index['legacy'] = ref
         self.save()  # A crash before seal leaves a missing reference, hence fail closed.
-        frozen._seal(path, record)
+        seal(path, record)
         return ref
 
     def check_resolution(self, item, path, root):
@@ -216,6 +275,7 @@ class Stops:
     def resume(self, item, resolution_ref, *, evidence_validation, run_id, retry_count, attempt):
         if item['record']['stop_class'] != 'SOFT_STOP' or evidence_validation != 'PASS':
             raise ValueError('AUTOMATIC_RESUME_FORBIDDEN')
+        self.gate(item['record']['session'] if 'session' in item['record'] else item['record']['target'], resolution_ref)
         path = self.store / 'stops_v2' / ('resume-' + uuid4().hex + '.json')
         path.parent.mkdir(exist_ok=True)
         event = dict(policy_version=VERSION, state='RESUMED', previous_stop_reference=item['reference'],
@@ -223,7 +283,11 @@ class Stops:
                      scope=item['record']['scope'], target=item['record']['target'],
                      evidence_validation='PASS', run_id=run_id, retry_count=retry_count,
                      attempt=str(attempt), result_reference=str(Path(attempt) / 'result.json'))
-        frozen._seal(path, event)
+        seal(path, event)
+        ref = reference(path)
+        self.index['resumed'].append(dict(previous_stop_reference=item['reference'],
+            resolution_reference=resolution_ref, resume_event_reference=ref,
+            scope=item['record']['scope'], target=item['record']['target']))
         self.index['active'].remove(item)
         self.save()
-        return reference(path)
+        return ref

@@ -155,7 +155,17 @@ class HistoricalPolicyTests(unittest.TestCase):
         (self.store / SESSION / 'listing.html').write_bytes(b'changed source')
         with self.assertRaisesRegex(ValueError, 'PROVENANCE_OR_HASH_CONFLICT'):
             d.acquire_one(self.root, SESSION, transport=Transport([]), resolution=resolution)
-        self.assertEqual(len(policy.Stops(self.store).index['active']), 1)
+        items = policy.Stops(self.store).index['active']
+        self.assertIn(item, items)
+        hard = [x for x in items if x['record']['stop_class'] == 'HARD_STOP']
+        self.assertEqual(len(hard), 1)
+        self.assertEqual(hard[0]['record']['stop_code'], 'ACQUISITION_PROVENANCE_OR_HASH_CONFLICT')
+        self.assertEqual(hard[0]['record']['scope'], 'global')
+        self.assertEqual(hard[0]['record']['previous_stop_reference'], item['reference'])
+        transport = Transport([])
+        with self.assertRaisesRegex(ValueError, 'HARD_STOP_ACTIVE'):
+            d.acquire_one(self.root, OTHER, transport=transport)
+        self.assertEqual(transport.calls, [])
         self.assertFalse(list((self.store / 'stops_v2').glob('resume-*')))
 
     def test_legacy_unknown_stop_fails_closed_and_is_not_overwritten(self):
@@ -188,6 +198,7 @@ class HistoricalPolicyTests(unittest.TestCase):
         self.assertEqual(result['state'], 'PASS')
         self.assertIsNotNone(result['resumed_reference'])
         self.assertEqual(old.read_bytes(), before)
+        self.assertEqual(len(policy.Stops(self.store).index['resumed']), 1)
 
     def test_deleted_stop_evidence_is_not_a_release(self):
         self.soft_failure()
@@ -216,15 +227,15 @@ class HistoricalPolicyTests(unittest.TestCase):
     def test_resume_event_must_be_durable_before_stop_is_released(self):
         item = self.soft_failure()
         resolution = self.resolution(item)
-        seal = frozen._seal
+        seal = policy.seal
         def fail_event(path, record):
             if Path(path).name.startswith('resume-'):
                 raise OSError('EVENT_WRITE_FAILED')
             return seal(path, record)
-        with patch.object(frozen, '_seal', side_effect=fail_event):
+        with patch.object(policy, 'seal', side_effect=fail_event):
             with self.assertRaisesRegex(OSError, 'EVENT_WRITE_FAILED'):
                 d.acquire_one(self.root, SESSION, transport=Transport([]), resolution=resolution)
-        self.assertTrue(any(active['reference'] == item['reference'] for active in policy.Stops(self.store).index['active']))
+        self.assertEqual(policy.Stops(self.store).index['active'], [item])
 
     def test_403_zero_retry_and_global_same_host_block_in_next_session_and_diagnostic(self):
         transport = Transport([response(status=403)])

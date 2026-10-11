@@ -8,18 +8,26 @@ Historical Directだけ[確定Policy v2](../../../config/operation_policy_v2.md)
 current STOP summaryは`current_stops_v2.json`、追加STOP/RESUMED証跡は`stops_v2/`。
 
 `run_state=historical_direct.RunState()`を同一runで共有すると、listing/JSON/PDFを通したsession別retry予算が最大2回となる。
-予算はrun IDごとに保存し、再開でも引き継ぐ。403/challengeはretry 0。
+予算はrun記録とcurrent summaryのtarget別stateへ保存し、run ID変更・diagnostic・再開でも引き継ぐ。
+上限到達後は同じAsia/Tokyo日付の新run IDでも要求0。Policyの「後日の通常run」は別の観測機会とする。
+応答不明の中断requestはreview待ちとし、run ID変更で初回attemptを復活させない。403/challengeはretry 0。
+public diagnosticは常にstore lock/STOP gateを通り、内部contextの注入による迂回は受け付けない。
 429再試行も429ならPolicy 4節に従い、その時点でhost停止。Retry-Afterは尊重する。
 transient上限はsession SKIP。同日の同一session再呼出しは保存済みSKIPを返し、run ID変更で連続retryしない。
-公式JSONのoctet-streamはdecode/schema/provenance PASS後にContent-Type WARNを保存する。
+正常200で429 streakをresetする。security判定時は例外を外へ返す前にdurable STOPを保存する。
+公式JSON/PDFのoctet-streamはdecode/schema/parser/provenance PASS後にContent-Type WARNを保存する。
 
 SOFT resumeは`resolution=<JSON path>`を渡す。resolutionには`stop_reference`（path/sha256）、`scope`、`target`、
 `root_cause`、`scope_isolation=PASS`、現在の修正code/configを指す`fix_refs`、`validation_refs`、旧STOPと同じ`evidence_refs`が必要。
 validation reportは`status=PASS`、`checks={fixture: PASS, regression: PASS}`と同じ`fix_refs`を持つ。
 各参照は`historical_policy_v2.reference(path)`のpath/sha256形式。PASS表記だけでは解除せず、保存済み公式リンク・Raw hash・PDF・実parser・既存validatorをoffline再検証する。
+再検証で新しいintegrity conflictが判明すれば旧SOFT証拠を保持したHARD_STOPへ昇格する。
+STOP/RESUMEDはatomic create-only + file/directory fsyncで保存する。
+current summaryは旧STOP・resolution・resume receiptを参照し、receipt欠損/破損ならfail closed。
 RESUMEDをdurable保存できた場合だけ解除し、別attemptに結果を保存する。Rawの再downloadや旧attemptの上書きはしない。
 
 有効な既存bundle/Manifestは再検証してrequest 0。証拠が未確認の既存ファイルも再取得せず`EXISTING_LOCAL_REQUIRES_VALIDATION`を返す。
+host STOP中も安全なoffline検証/SKIPは許可し、network boundary直前では必ずSTOPを適用する。
 Partial tickerは`DEFERRED_PARTIAL_TICKER`（Task 7C/7D）。全6件必須schemaとconsumerの移行を別変更に分離する。
 通常Browser経路・Forecast engine・登録gateは今回の移行対象外。以下の旧手順は履歴として保持する。
 
