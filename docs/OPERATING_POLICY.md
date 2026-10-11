@@ -3,6 +3,9 @@
 このファイルは、日次株価予測プロジェクトの運用原則をGitで管理するための基準です。
 詳細な実装は段階的に行い、この文書だけで既存Engineの挙動を変更しません。
 
+STOP / Retry / Resumeの確定Policyは [STOP / Retry / Resume v2](../config/operation_policy_v2.md) を参照します。
+以下のv1 Draftは履歴として保持し、v2との差・移行条件は同文書のmigration noteに記録します。現行実装は未移行です。
+
 ## 基本原則
 - データ取得・公式仕様への互換対応は、必要以上に停止させない。
 - Forecast生成後の予測値は変更しない。修正版が必要なら別Forecast IDを使う。
