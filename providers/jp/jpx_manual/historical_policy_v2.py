@@ -186,13 +186,19 @@ class Stops:
                     raise ValueError('STOP_EVIDENCE_HASH_CONFLICT') from error
             if item['record']['scope'] not in ('ticker', 'session', 'host', 'global'):
                 raise ValueError('STOP_SCOPE_INVALID')
+        self._reviewed_legacy_references()
+
+    def _reviewed_legacy_references(self):
+        from .legacy_stop_review import verified_releases
+        return verified_releases(self)
 
     def save(self):
         write_current(self.path, self.index)
 
     def applicable(self, session):
-        return [item for item in self.index['active'] if item['record']['scope'] in ('host', 'global')
-                or item['record']['target'] == session]
+        reviewed = self._reviewed_legacy_references()
+        return [item for item in self.index['active'] if item['reference'] not in reviewed
+                and (item['record']['scope'] in ('host', 'global') or item['record']['target'] == session)]
 
     def gate(self, session, resolution=None, *, network=True):
         active = self.applicable(session)
