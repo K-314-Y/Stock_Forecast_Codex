@@ -1343,7 +1343,9 @@ def acquire_one(root, session, *, transport, resolution=None, run_state=None):
                             return dict(old, web_requests=0)
                         break
                 else:
-                    raise FileExistsError('INTERRUPTED_ATTEMPT_REVIEW_REQUIRED')
+                    from .legacy_stop_review import reviewed_legacy_root_attempt
+                    if not reviewed_legacy_root_attempt(stops, session, previous):
+                        raise FileExistsError('INTERRUPTED_ATTEMPT_REVIEW_REQUIRED')
             if active is not None:
                 validating_evidence = False  # Invalid declarations alone do not invent an integrity failure.
                 resolution_ref = stops.check_resolution(active, resolution, root)

@@ -104,6 +104,12 @@ def seal(path, record):
 
 class Stops:
     def __init__(self, store):
+        self._load_evidence(store)
+        self._reviewed_legacy_references()
+
+    def _load_evidence(self, store):
+        # Only explicit renewal bootstraps through this loader. gate() still
+        # revalidates the current generation, including on a bootstrap object.
         self.store = Path(store).resolve()
         self.path = self.store / 'current_stops_v2.json'
         if self.path.exists():
@@ -186,8 +192,6 @@ class Stops:
                     raise ValueError('STOP_EVIDENCE_HASH_CONFLICT') from error
             if item['record']['scope'] not in ('ticker', 'session', 'host', 'global'):
                 raise ValueError('STOP_SCOPE_INVALID')
-        self._reviewed_legacy_references()
-
     def _reviewed_legacy_references(self):
         from .legacy_stop_review import verified_releases
         return verified_releases(self)
