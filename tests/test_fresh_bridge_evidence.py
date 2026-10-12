@@ -11,6 +11,8 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
+from tests.fresh_receipt_fixture import synthetic_legacy_receipt
+
 from engine import fresh_bridge as bridge
 from engine import minimal_trial as core
 from engine import one_session_dry_run as probe
@@ -41,7 +43,7 @@ class FreshBridgeEvidenceTests(unittest.TestCase):
 
     def capture(self, when=RETRIEVED, response=None, ticker='6857'):
         with patch.object(bridge, '_receipt_now', return_value=when):
-            return bridge.capture_fresh_close(ticker, PREVIOUS,
+            return synthetic_legacy_receipt(ticker, PREVIOUS,
                 self.fetch if response is None else lambda: response)
 
     def verify(self, evidence, created=CREATED, cutoff=CUTOFF):
@@ -196,13 +198,13 @@ class FreshBridgeEvidenceTests(unittest.TestCase):
         self.assertEqual(Path(evidence['receipt']).read_bytes(), original)
         with patch.object(bridge, '_receipt_now', return_value=RETRIEVED):
             with self.assertRaisesRegex(RuntimeError, 'connector failed'):
-                bridge.capture_fresh_close('6857', PREVIOUS, Mock(side_effect=RuntimeError('connector failed')))
+                synthetic_legacy_receipt('6857', PREVIOUS, Mock(side_effect=RuntimeError('connector failed')))
         self.assertEqual(len(list(bridge._receipt_root().glob('*/receipt.json'))), 1)
 
     def test_acquisition_clock_rollback_rejected(self):
         with patch.object(bridge, '_receipt_now', side_effect=[CREATED, RETRIEVED]):
             with self.assertRaisesRegex(ValueError, 'BRIDGE_ACQUISITION_CLOCK_INVALID'):
-                bridge.capture_fresh_close('6857', PREVIOUS, self.fetch)
+                synthetic_legacy_receipt('6857', PREVIOUS, self.fetch)
         self.assertFalse(list(bridge._receipt_root().glob('*/receipt.json')))
 
     def test_provider_session_currency_and_identity_use_existing_normalizer(self):
@@ -248,7 +250,7 @@ class FreshBridgeEvidenceTests(unittest.TestCase):
             response = copy.deepcopy(self.response)
             response['structuredContent']['company_overview']['isin'] = bridge.CORE_ISINS[ticker]
             barrier.wait()
-            return ticker, bridge.capture_fresh_close(ticker, PREVIOUS, lambda: response)
+            return ticker, synthetic_legacy_receipt(ticker, PREVIOUS, lambda: response)
         with patch.object(bridge, '_receipt_now', return_value=RETRIEVED):
             with ThreadPoolExecutor(max_workers=len(core.CORE)) as pool:
                 records = list(pool.map(acquire, core.CORE))

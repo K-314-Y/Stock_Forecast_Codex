@@ -71,13 +71,16 @@ class EngineTests(unittest.TestCase):
                                       '2026-09-18T08:45:00+09:00', stocks)
         self.assertEqual(len(snapshot['stocks']), 6)
 
-    def test_formal_and_trial_execution_gates_remain_off(self):
+    def test_formal_closed_and_trial_scoped_to_personal_noncommercial(self):
+        from engine import execution_policy
         config = json.loads((e.ROOT / 'config/minimal_forward_trial_config.json').read_text())
         runtime = json.loads((e.ROOT / 'state/runtime/runtime_snapshot.json').read_text())
-        for name in ('formal_forecast_enabled', 'forward_trial_enabled', 'forecast_execution_enabled'):
-            self.assertIs(config['gates'][name], False)
-        self.assertIs(runtime['forecast_allowed'], False)
-        self.assertIs(runtime['gates']['trial_enabled'], False)
+        self.assertIs(config['gates']['formal_forecast_enabled'], False)
+        self.assertIs(config['gates']['schedules_enabled'], False)
+        gates = execution_policy.execution_gates(runtime['execution_scope'], runtime['target_session'])
+        self.assertEqual(runtime['forecast_allowed'], gates['forecast_allowed'])
+        self.assertEqual(runtime['gates']['trial_enabled'], gates['trial_enabled'])
+        self.assertFalse(execution_policy.execution_gates('COMMERCIAL', runtime['target_session'])['forecast_allowed'])
         for name in ('formal_forecast', 'forward_trial', 'score', 'prediction_log', 'backdating'):
             self.assertIs(runtime['late_research'][name], False)
 

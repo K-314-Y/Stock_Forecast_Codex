@@ -5,11 +5,11 @@ import json
 import math
 import os
 import statistics
-import shutil
 import tempfile
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from weakref import WeakKeyDictionary
 from zoneinfo import ZoneInfo
 
 from engine import historical_quality as quality
@@ -122,25 +122,32 @@ def _bridge_source(overview, receipt):
                 retrieved_at=receipt.isoformat())
 
 
-def capture_fresh_close(ticker, expected_session, fetch_existing):
-    """Opt-in wrapper for the EXISTING ticker-bound connector invocation.
+class _FreshTicket:
+    """Opaque, non-serializable in-process capability; no price-bearing repr."""
+    __slots__ = ('__weakref__',)
 
-    The acquisition controller supplies the existing tool callable, not a
-    timestamp. It must bind that call to ticker/entity as in the provider test.
-    No scheduler, automatic call, retroactive receipt import or forecast here.
-    Only this producer can authenticate new receipts. Files are create-only.
+
+# Weak keys release prices if a failed/abandoned execution drops its capability.
+_FRESH_MEMORY = WeakKeyDictionary()
+
+
+def capture_fresh_close(ticker, expected_session, fetch_existing):
+    """Acquire and validate in memory only. No key, file, log, cache or receipt.
+
+    The trusted controller binds the existing connector callable to ticker/ISIN.
+    Responses and company_overview are never returned or persisted. The capability
+    must be consumed in this process by the current execution, never replayed.
     """
     if ticker not in base.CORE:
         raise ValueError('CORE_ONLY')
-    key = _receipt_key(create=True)
+    if not callable(fetch_existing):
+        raise ValueError('NEW_FRESH_RETRIEVAL_REQUIRED')
     started = _receipt_now()
     response = fetch_existing()
     completed = _receipt_now()
     if started.tzinfo is None or completed.tzinfo is None or completed < started:
         raise ValueError('BRIDGE_ACQUISITION_CLOCK_INVALID')
-    # Copy exactly the response that completed, before extracting any prices.
-    payload = base.canonical_bytes(response)
-    overview = _overview(json.loads(payload))
+    overview = _overview(response)
     if overview.get('isin') != CORE_ISINS[ticker]:
         raise ValueError('BRIDGE_PROVIDER_TICKER_MISMATCH')
     source = _bridge_source(overview, completed)
@@ -149,51 +156,35 @@ def capture_fresh_close(ticker, expected_session, fetch_existing):
     if (observation['freshness_state'] != 'FRESH' or completed < session_close
             or _receipt_time(overview['timestamp']) < session_close):
         raise ValueError('BRIDGE_UNVALIDATED_OR_STALE')
-    receipt = dict(schema_version='fresh-bridge-receipt-v1', source_role='FORECAST_FEATURE',
-                   source='BIGDATA/FMP', source_tool='bigdata_company_tearsheet',
-                   source_section='company_overview', ticker=ticker, session=expected_session,
-                   close=overview['price'], provider_timestamp=overview['timestamp'],
-                   retrieval_started_at=started.isoformat(),
-                   retrieval_completed_at=completed.isoformat(),
-                   retrieved_at=completed.isoformat(), source_data_sha256=hashlib.sha256(payload).hexdigest())
-    signature = hmac.new(key, base.canonical_bytes(receipt), hashlib.sha256).hexdigest()
-    envelope = dict(receipt=receipt, hmac_sha256=signature)
-    identifier = hashlib.sha256(base.canonical_bytes(envelope)).hexdigest()
-    destination = _receipt_root() / identifier
-    stage = Path(tempfile.mkdtemp(prefix='.pending-', dir=_receipt_root()))
-    try:
-        for name, data in [('source.json', payload), ('receipt.json', base.canonical_bytes(envelope))]:
-            with (stage / name).open('xb') as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-        fd = os.open(stage, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        # Serialize commits using an exclusive reservation, including concurrent
-        # same-content receipts. A partial .pending-* package is never admitted.
-        reservation = _receipt_root() / (identifier + '.reserved')
-        with reservation.open('xb'):
-            if destination.exists():
-                raise FileExistsError('BRIDGE_RECEIPT_CREATE_ONLY')
-            os.rename(stage, destination)
-        fd = os.open(_receipt_root(), os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-    finally:
-        if stage.exists():
-            shutil.rmtree(stage)
-    return dict(source_role='FORECAST_FEATURE', source_kind='FRESH_CLOSE_BRIDGE',
-                path=str(destination / 'source.json'), sha256=receipt['source_data_sha256'],
-                receipt=str(destination / 'receipt.json'), session_end=expected_session)
+    if overview.get('as_of_utc_timestamp') is not None:
+        if _receipt_time(overview['as_of_utc_timestamp']) > completed:
+            raise ValueError('POST_RETRIEVAL_PROVIDER_TIMESTAMP')
+    ticket = _FreshTicket()
+    _FRESH_MEMORY[ticket] = (ticker, expected_session, observation['close_bridge'],
+                            started, completed, True)
+    # No response, source or observation survives this producer invocation.
+    return ticket
+
+
+def consume_fresh_close(ticket, ticker, previous, execution_started, cutoff):
+    """One-use capability; saved raw receipts and feature snapshots are rejected."""
+    if type(ticket) is not _FreshTicket or ticket not in _FRESH_MEMORY:
+        raise ValueError('STORED_FRESH_NOT_ELIGIBLE_FOR_FORECAST_REUSE')
+    symbol, session, close, started, completed, timestamp_present = _FRESH_MEMORY.pop(ticket)
+    if symbol != ticker or session != previous:
+        raise ValueError('BRIDGE_TICKER_SESSION_MISMATCH')
+    if (started < execution_started or started.date() != execution_started.date()
+            or completed >= cutoff or completed > _receipt_now()):
+        raise ValueError('POST_GENERATION_OR_REUSED_FRESH_INPUT')
+    return close, dict(ticker=ticker, previous_session=previous, provider='BIGDATA',
+                       underlying_provider='FMP', retrieved_at=completed.isoformat(),
+                       provider_timestamp_present=timestamp_present,
+                       session_validation='PASS', currency_validation='PASS',
+                       PIT_validation='PASS')
 
 
 def verify_fresh_evidence(evidence, ticker, created, cutoff):
-    """Return source-derived closes + all public hashes to seal in the snapshot."""
+    """Read-only legacy diagnostic/probe verifier; never a Forward Trial input reader."""
     path = Path(evidence['path']).resolve()
     raw = path.read_bytes()
     source_hash = hashlib.sha256(raw).hexdigest()

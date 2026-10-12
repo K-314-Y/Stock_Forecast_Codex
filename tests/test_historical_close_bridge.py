@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from tests.fresh_receipt_fixture import synthetic_legacy_receipt
+
 from engine import minimal_trial as core
 from engine import historical_close_bridge as history
 from engine import one_session_dry_run as probe
@@ -180,7 +182,7 @@ class HistoricalCloseBridgeTests(unittest.TestCase):
                 price=100, currency='JPY', exchange='JPX', source=dict(provider_id='FMP'))))
             # Synthetic future close, only in a temporary test store.
             with patch.object(fresh_bridge, '_receipt_now', return_value=datetime.fromisoformat('2026-10-08T16:00:00+09:00')):
-                fresh = fresh_bridge.capture_fresh_close(ticker, '2026-10-08', lambda:response)
+                fresh = synthetic_legacy_receipt(ticker, '2026-10-08', lambda:response)
             stocks[ticker] = dict(provenance=dict(evidence=[historical, fresh]))
         hashes, prices = probe._evidence(stocks, '2026-10-08', CREATED, CUTOFF)
         self.assertEqual(len(prices), 6)

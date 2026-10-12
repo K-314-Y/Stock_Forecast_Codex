@@ -11,6 +11,8 @@ import unittest
 from unittest.mock import patch
 from jsonschema import ValidationError
 
+from tests.fresh_receipt_fixture import synthetic_legacy_receipt
+
 from engine import minimal_trial as core
 from engine import fresh_bridge as bridge
 from engine import one_session_dry_run as probe
@@ -86,7 +88,7 @@ class OneSessionProbeTests(unittest.TestCase):
                     timestamp=row['session_date'] + 'T15:30:00+09:00', price=row['close'],
                     isin=bridge.CORE_ISINS[symbol], exchange='JPX', currency='JPY', source=dict(provider_id='FMP'))))
                 with patch.object(bridge, '_receipt_now', return_value=datetime.fromisoformat(TARGET + 'T08:20:00+09:00')):
-                    evidence.append(bridge.capture_fresh_close(symbol, row['session_date'], lambda: response))
+                    evidence.append(synthetic_legacy_receipt(symbol, row['session_date'], lambda: response))
             rows = historical + bridge_rows
             self.prepared['stocks'][symbol] = dict(features=core.features(rows, threshold),
                                                    provenance={'evidence': evidence})
