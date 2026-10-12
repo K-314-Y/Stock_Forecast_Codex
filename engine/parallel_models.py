@@ -97,6 +97,8 @@ def _fold_description(train, validation):
 def train_models(samples, target_session, created_at, code_commit, *, synthetic=False):
     """Fit two shadows, compare six series offline. No live forecasts are written."""
     config = rules()
+    if not synthetic:
+        raise ValueError('PIT_TRAINING_DATASET_REQUIRED; use train_pit_dataset')
     if not re.fullmatch('[a-f0-9]{40}', code_commit):
         raise ValueError('CODE_COMMIT_REQUIRED')
     if stamp(created_at) >= stamp(target_session + 'T08:45:00+09:00'):
@@ -159,6 +161,74 @@ def train_models(samples, target_session, created_at, code_commit, *, synthetic=
                         benchmark_metrics=benchmark_metrics, synthetic=synthetic)
 
 
+def train_pit_dataset(destination, history, created_at, code_commit):
+    """Real historical CV entry. No acquisition, Forecast ID, or Forward scoring."""
+    from engine import parallel_training as training
+    dataset = training.require_training_ready(training.read_dataset(destination))
+    if not re.fullmatch('[a-f0-9]{40}', code_commit):
+        raise ValueError('CODE_COMMIT_REQUIRED')
+    target = dataset['target_session']
+    if stamp(created_at) > datetime.now(timezone.utc) or stamp(created_at) >= stamp(target + 'T08:45:00+09:00'):
+        raise ValueError('MODEL_TRAINING_AS_OF_INVALID')
+    checksum = dataset['dataset_sha256']
+    folds = training.plan_folds(dataset, history)
+    # Supplied raw history must reproduce the exact persisted replay definitions.
+    if training.dataset_sha256(dataset) != checksum:
+        raise ValueError('CV_REPLAY_DATASET_CHANGED')
+    final_rows = training.final_training_rows(dataset)
+    config, packs = rules(), {}
+    for model_id in (LOGISTIC, LIGHTGBM):
+        candidates = [config['logistic']] if model_id == LOGISTIC else search_space()
+        diagnostics = []
+        for parameters in candidates:
+            actual, probabilities, descriptions = [], [], []
+            for fold in folds:
+                train, validation = fold['train'], fold['validation']
+                estimator = _fit(model_id, train, parameters)
+                probs = predict_probabilities(model_id, estimator, validation)
+                labels_ = [r['label'] for r in validation]
+                descriptions.append(dict(_fold_description(train, validation),
+                    fold_id=fold['definition']['fold_id'], label_threshold='CV_LABEL_THRESHOLD',
+                    metrics=offline_metrics(labels_, probs)))
+                actual.extend(labels_)
+                probabilities.extend(probs)
+            diagnostics.append(dict(hyperparameters=parameters,
+                metrics=offline_metrics(actual, probabilities), folds=descriptions))
+        chosen = min(range(len(diagnostics)), key=lambda i: diagnostics[i]['metrics']['brier'])
+        parameters = diagnostics[chosen]['hyperparameters']
+        estimator = _fit(model_id, final_rows, parameters)
+        meta = dict(schema_version='parallel-model-freeze-v1', model_id=model_id,
+            model_version=model_id, model_role='SHADOW', target_session=target,
+            training_start=final_rows[0]['session'], training_end=final_rows[-1]['session'],
+            training_rows=len(final_rows), feature_set_version=config['feature_set_versions'][model_id],
+            features=list(PRICE9), hyperparameters=parameters,
+            effective_parameters=(estimator.named_steps['classifier'].get_params() if model_id == LOGISTIC else estimator.params),
+            threshold_version=config['threshold_version'], training_dataset_hash=checksum,
+            walk_forward_summary=dict(status='MODEL_SELECTION_DIAGNOSTIC_NOT_UNBIASED_PERFORMANCE',
+                selected_candidate=chosen, candidates=diagnostics), created_at=created_at, code_commit=code_commit,
+            config_hash=specification_hash(), synthetic=False, seed=config['seed'], calibration='NONE_V1',
+            dependencies={n: importlib.metadata.version(n) for n in
+                ('numpy', 'scipy', 'scikit-learn', 'lightgbm', 'joblib', 'threadpoolctl')},
+            training_provenance=dict(dataset_path=str(Path(destination).resolve()),
+                dataset_metadata_sha256=core.sha256(Path(destination) / 'dataset.json'),
+                training_dataset_sha256=checksum, cv_threshold_replay_version=training.REPLAY,
+                CV_LABEL_THRESHOLD=dataset['cv_threshold_replays'],
+                FINAL_MODEL_LABEL_THRESHOLD=dict(version=config['threshold_version'],
+                    sha256=dataset['production_threshold_sha256']), immutable=True))
+        packs[model_id] = dict(estimator=estimator, metadata=meta)
+    completed = datetime.now(timezone.utc)
+    if completed >= stamp(target + 'T08:45:00+09:00'):
+        raise ValueError('MODEL_TRAINING_COMPLETED_AFTER_CUTOFF')
+    for pack in packs.values():
+        pack['metadata']['created_at'] = completed.isoformat()
+        validate_model_metadata(pack['metadata'])
+    # Existing frozen Primary tables were not known during early historical CV.
+    # Avoid a retrospective Primary comparison; do not retrain its baselines.
+    return packs, dict(dataset_sha256=checksum, folds=dataset['fold_definitions'],
+        primary_comparison=dict(status='UNAVAILABLE', reason='FROZEN_PRIMARY_NOT_AVAILABLE_FOR_FULL_CV_WINDOW'),
+        model_promotion=False)
+
+
 def validate_model_metadata(meta):
     from engine.parallel_schema import validate
     validate(meta, 'model')
@@ -168,6 +238,23 @@ def validate_model_metadata(meta):
                 'hyperparameters', 'effective_parameters', 'threshold_version', 'training_dataset_hash',
                 'walk_forward_summary', 'created_at', 'code_commit', 'config_hash', 'synthetic', 'seed',
                 'calibration', 'dependencies'}
+    if 'training_provenance' in meta:
+        expected.add('training_provenance')
+        from engine import parallel_training as training
+        proof = meta['training_provenance']
+        dataset = training.require_training_ready(training.read_dataset(proof['dataset_path']))
+        if (proof['training_dataset_sha256'] != dataset['dataset_sha256']
+                or proof['dataset_metadata_sha256'] != core.sha256(Path(proof['dataset_path']) / 'dataset.json')
+                or meta['training_dataset_hash'] != dataset['dataset_sha256']
+                or proof['cv_threshold_replay_version'] != training.REPLAY
+                or proof['CV_LABEL_THRESHOLD'] != dataset['cv_threshold_replays']
+                or proof['FINAL_MODEL_LABEL_THRESHOLD'] != dict(version='short-oc-p33-v1', sha256=dataset['production_threshold_sha256'])
+                or proof['immutable'] is not True or meta['synthetic']
+                or meta['training_rows'] != len(dataset['eligible_rows'])
+                or meta['target_session'] != dataset['target_session']):
+            raise ValueError('MODEL_TRAINING_PROVENANCE_INVALID')
+    elif meta['synthetic'] is not True:
+        raise ValueError('PIT_TRAINING_PROVENANCE_REQUIRED')
     if set(meta) != expected or meta['config_hash'] != specification_hash():
         raise ValueError('MODEL_FREEZE_SCHEMA_OR_CONFIG_CHANGED')
     model_id = meta['model_id']

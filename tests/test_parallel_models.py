@@ -130,6 +130,12 @@ class ShadowTests(unittest.TestCase):
             self.assertLess(p['metadata']['training_end'], self.target)
             models.validate_model_metadata(p['metadata'])
 
+    def test_real_model_freeze_requires_pit_training_provenance(self):
+        meta = copy.deepcopy(self.packs[data.LOGISTIC]['metadata'])
+        meta['synthetic'] = False
+        with self.assertRaisesRegex(ValueError, 'PIT_TRAINING_PROVENANCE_REQUIRED'):
+            models.validate_model_metadata(meta)
+
     def test_missing_training_class_rejected(self):
         with self.assertRaisesRegex(ValueError, 'ALL_THREE'):
             models._fit(data.LOGISTIC, [dict(r, label='UP') for r in self.rows], data.rules()['logistic'])

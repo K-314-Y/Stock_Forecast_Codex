@@ -36,7 +36,9 @@ UNAVAILABLEとして明示し、未来のfrozen tablesを過去へ適用しな�
 
 dataset artifactは `data/training/parallel_models_v1/<dataset sha256>/` のcreate-only directory。
 共通eligible rows、excluded metadata、source hashes、PIT audit、fold定義、CV replay metadataを
-格納する。Raw本文/responseを複製しない。real model Freezeはdataset/join/2-fold/両MLの
+格納する。dataset SHAは計算実時刻を除いた決定論的内容hash、file sidecarは実時刻も含む
+全metadataをsealする。replay_as_ofと実際のcalculated_atを混同しない。
+Raw本文/responseを複製しない。real model Freezeはdataset/join/2-fold/両MLの
 validation PASS、BLOCKER/HIGHなしの場合だけ。synthetic testは実データ性能を示さない。
 
 STOP時にも除外metadataとaudit artifactを保存できるが、実学習/Freezeは開始しない。

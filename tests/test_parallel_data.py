@@ -135,7 +135,7 @@ class DataTests(unittest.TestCase):
         self.assertNotIn(rows[0]['session'], {r['session'] for r in train})
 
     def test_insufficient_sessions_fail_closed(self):
-        source, target = samples(119)
+        source, target = samples(99)
         rows = data.training_rows(source, target, target + 'T08:05:00+09:00', synthetic=True)
         with self.assertRaisesRegex(ValueError, 'INSUFFICIENT'):
             data.expanding_folds(rows)

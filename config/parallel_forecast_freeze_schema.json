@@ -292,6 +292,9 @@
         "artifact_hash": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
+        },
+        "training_provenance": {
+          "type": "object"
         }
       }
     },

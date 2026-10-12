@@ -153,7 +153,8 @@ def _valid_row(row):
     return dict(session_date=row['session_date'], **row['values'])
 
 
-def training_candidates(result, rules=None, training_end_date=None):
+def threshold_candidate(result, rules=None, training_end_date=None):
+    """Existing pure threshold calculation; caller controls purpose/persistence."""
     rules = policy() if rules is None else rules
     rows = result['records']
     if training_end_date is not None:
@@ -202,6 +203,20 @@ def training_candidates(result, rules=None, training_end_date=None):
              'source_file_sha256': result['source_hash'],
              'quality_policy_sha256': engine.sha256(POLICY_PATH),
              'status': 'TRIAL_CANDIDATE_NOT_ACTIVATED'}
+    return limit
+
+
+def training_candidates(result, rules=None, training_end_date=None):
+    rules = policy() if rules is None else rules
+    limit = threshold_candidate(result, rules, training_end_date)
+    rows = result['records']
+    if training_end_date is not None:
+        rows = [r for r in rows if r['session_date'] and r['session_date'] <= training_end_date]
+    invalid = [r for r in rows if r['issues']]
+    excluded_dates = sorted(set(r['session_date'] for r in invalid if r['session_date']))
+    valid = [_valid_row(r) for r in rows if not r['issues']]
+    last = [_valid_row(r) for r in rows[-rules['current_feature_window_rows']:]]
+    final = limit['T_final']
     feature = engine.features(last, limit)
     labels = [engine.classify(r['close']/r['open']-1, final) for r in valid]
     base_rate = engine.empirical(labels)

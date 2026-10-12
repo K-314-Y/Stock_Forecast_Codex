@@ -282,10 +282,15 @@ def expanding_folds(rows, *, minimum_train_sessions=None, validation_sessions=No
     config = rules()['walk_forward']
     minimum = config['minimum_train_sessions'] if minimum_train_sessions is None else minimum_train_sessions
     width = config['validation_sessions'] if validation_sessions is None else validation_sessions
-    count = config['folds'] if folds is None else folds
-    if min(minimum, width, count) < 1:
+    if min(minimum, width) < 1:
         raise ValueError('INVALID_FOLD_CONFIG')
     days = sorted({row['session'] for row in rows})
+    count = ((len(days) - minimum) // width if config['folds'] == 'ALL_SUPPORTED'
+             else config['folds']) if folds is None else folds
+    if folds is None and count < config.get('minimum_validation_folds', 2):
+        raise ValueError('INSUFFICIENT_PIT_TRAINING_SESSIONS')
+    if min(minimum, width, count) < 1:
+        raise ValueError('INVALID_FOLD_CONFIG')
     pairs = [(r['session'], r['ticker']) for r in rows]
     if len(pairs) != len(set(pairs)):
         raise ValueError('DUPLICATE_TRAINING_GRAIN')
