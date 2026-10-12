@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -205,8 +206,21 @@ class ShadowTests(unittest.TestCase):
                 runner.validate_bundle(bundle)
 
     def test_live_forecast_always_disabled_before_acquisition(self):
-        with self.assertRaisesRegex(ValueError, 'LIVE_FORECAST_DISABLED'):
+        with patch('engine.parallel_runner.common_from_execution') as consume, self.assertRaisesRegex(ValueError, 'LIVE_FORECAST_DISABLED'):
             runner.run_forward(target_session='2026-10-13', provider='must_not_call')
+        consume.assert_not_called()
+
+    def test_execution_activation_does_not_change_frozen_specification(self):
+        current = data.rules()
+        expected = data.specification_hash()
+        future = dict(current, task_mode='FORWARD_EXECUTION', live_generation_enabled=True)
+        with patch('engine.parallel_data.rules', return_value=future):
+            self.assertEqual(data.specification_hash(), expected)
+
+    def test_one_execution_flag_cannot_enable_live_runner(self):
+        config = dict(data.rules(), live_generation_enabled=True)
+        with patch('engine.parallel_runner.rules', return_value=config), self.assertRaisesRegex(ValueError, 'LIVE_FORECAST_DISABLED'):
+            runner.run_forward()
 
     def test_no_synthetic_10_13_forecast(self):
         with self.assertRaisesRegex(ValueError, 'NON_TARGET_PROBE'):

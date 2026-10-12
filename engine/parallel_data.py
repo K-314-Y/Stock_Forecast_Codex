@@ -24,6 +24,13 @@ def digest(value):
     return hashlib.sha256(core.canonical_bytes(value)).hexdigest()
 
 
+def specification_hash():
+    """Freeze model specification independently of later execution activation gates."""
+    config = rules()
+    gates = {'task_mode', 'live_generation_enabled', 'outcome_scoring_enabled'}
+    return digest({k: v for k, v in config.items() if k not in gates})
+
+
 def stamp(value):
     result = datetime.fromisoformat(value)
     if result.tzinfo is None:
@@ -171,7 +178,7 @@ def build_common_snapshot(target_session, feature_end, created_at, feature_metad
                   baseline_version=config['baseline_version'],
                   baseline_training_end=baseline_tables['training_end_date'],
                   threshold_version=config['threshold_version'],
-                  config_hash=digest(config), synthetic=bool(synthetic), stocks=stocks)
+                  config_hash=specification_hash(), synthetic=bool(synthetic), stocks=stocks)
     result['common_snapshot_hash'] = digest(result)
     return result
 
@@ -182,7 +189,7 @@ def validate_snapshot(snapshot):
                 'available_at_rule', 'source_hashes', 'source_registry', 'baseline_version',
                 'baseline_training_end', 'threshold_version', 'config_hash', 'synthetic',
                 'stocks', 'common_snapshot_hash'}
-    if set(snapshot) != expected or snapshot['config_hash'] != digest(config):
+    if set(snapshot) != expected or snapshot['config_hash'] != specification_hash():
         raise ValueError('SNAPSHOT_SCHEMA_OR_CONFIG_CHANGED')
     raw = {k: v for k, v in snapshot.items() if k != 'common_snapshot_hash'}
     if snapshot['common_snapshot_hash'] != digest(raw):
@@ -216,6 +223,8 @@ def common_from_execution(inputs, scope, target_session):
     now = fresh_bridge._receipt_now().isoformat()
     previous = snapshot['previous_session']
     thresholds, hashes = forward_trial_inputs._frozen_candidates(previous)
+    hashes.update(inputs._source_hashes)
+    hashes['ephemeral-derived-core6'] = digest(snapshot)
     path = core.ROOT / 'config/trial_baseline_state_tables_candidate.json'
     tables = json.loads(path.read_bytes())
     meta = {}

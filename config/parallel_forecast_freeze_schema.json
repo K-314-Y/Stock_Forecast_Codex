@@ -54,7 +54,10 @@
       ],
       "properties": {
         "schema_version": {
-          "const": "parallel-forecast-probe-v1"
+          "enum": [
+            "parallel-forecast-probe-v1",
+            "parallel-forecast-v1"
+          ]
         },
         "model_id": {
           "enum": [
@@ -156,10 +159,14 @@
           }
         },
         "synthetic": {
-          "const": true
+          "type": "boolean"
         },
         "exclude_from_trial_metrics": {
-          "const": true
+          "type": "boolean"
+        },
+        "forecast_id": {
+          "type": "string",
+          "pattern": "^parallel_[0-9]{8}_(6857|7203|8306|1605|9433|3197)_(equal-linear-pool-v1|multinomial-logistic-v1|lightgbm-multiclass-v1)$"
         }
       }
     },
@@ -383,10 +390,10 @@
           "format": "date-time"
         },
         "synthetic": {
-          "const": true
+          "type": "boolean"
         },
         "exclude_from_trial_metrics": {
-          "const": true
+          "type": "boolean"
         },
         "config_hash": {
           "type": "string",

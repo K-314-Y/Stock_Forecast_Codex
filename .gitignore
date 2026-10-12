@@ -52,6 +52,7 @@ analysis/automation/
 !/analysis/.keep
 !/analysis/minimal_forward_trial_design_2026-09-15.md
 !/analysis/japan_free_provider_comparison_template_v1_2_2026-09-13.json
+!/analysis/model_selection_research_v1.md
 
 # REVIEW_REQUIRED: acquired responses, market-derived values, inline real data
 /config/data_sources.md

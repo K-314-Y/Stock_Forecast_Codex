@@ -60,6 +60,10 @@ forecast bundleは共通snapshotと同一generated_at/freeze_time、1 PRIMARY + 
 18 model×ticker records、および比較用frozen baseline 18 recordsを参照する。
 relative_strengthはmissing_optional / RULE_NOT_FROZEN。
 本Taskではlive runnerは明示的に無効。synthetic probeはtemporary directoryだけで検証。
+future `run_forward` は既存scope gateとone-use入力を要求し、同じsnapshotから3モデルを
+生成してtarget単位にatomic/create-only Freezeする。現在のconfigでは入力消費前に拒否。
+実行activation flagはmodel specification hashから分離し、後日のactivationで学習済み
+仕様hashを変えない。実行gateは生成・書込に適用し、immutable artifactのreadには適用しない。
 scoring entryは追加しない。将来同じOutcomeを6系列へjoinできるcomparison rowsを用意する。
 60 sessions経過でも自動昇格しない。昇格は別policy/review/approval。
 

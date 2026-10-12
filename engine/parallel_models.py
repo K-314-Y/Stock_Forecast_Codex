@@ -13,6 +13,7 @@ from engine import one_session_dry_run as storage
 from engine.parallel_data import (CLASSES, PRICE9, PRIMARY, LOGISTIC, LIGHTGBM, MODEL_ROLES,
                                   digest, expanding_folds, probability_valid, rules, stamp,
                                   training_rows, hash_valid)
+from engine.parallel_data import specification_hash
 from models.linear_pool import predict as primary_predict
 from models.logistic import fit as fit_logistic
 from models.lightgbm import fit as fit_lightgbm, search_space
@@ -135,7 +136,7 @@ def train_models(samples, target_session, created_at, code_commit, *, synthetic=
                         threshold_version=config['threshold_version'], training_dataset_hash=dataset_hash,
                         walk_forward_summary=dict(status='MODEL_SELECTION_DIAGNOSTIC_NOT_UNBIASED_PERFORMANCE',
                                                   selected_candidate=chosen, candidates=diagnostics),
-                        created_at=created_at, code_commit=code_commit, config_hash=digest(config),
+                        created_at=created_at, code_commit=code_commit, config_hash=specification_hash(),
                         synthetic=synthetic, seed=config['seed'], calibration='NONE_V1',
                         dependencies={n: importlib.metadata.version(n) for n in
                                       ('numpy', 'scipy', 'scikit-learn', 'lightgbm', 'joblib', 'threadpoolctl')})
@@ -167,7 +168,7 @@ def validate_model_metadata(meta):
                 'hyperparameters', 'effective_parameters', 'threshold_version', 'training_dataset_hash',
                 'walk_forward_summary', 'created_at', 'code_commit', 'config_hash', 'synthetic', 'seed',
                 'calibration', 'dependencies'}
-    if set(meta) != expected or meta['config_hash'] != digest(config):
+    if set(meta) != expected or meta['config_hash'] != specification_hash():
         raise ValueError('MODEL_FREEZE_SCHEMA_OR_CONFIG_CHANGED')
     model_id = meta['model_id']
     if (model_id not in (LOGISTIC, LIGHTGBM) or meta['model_version'] != model_id

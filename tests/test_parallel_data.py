@@ -176,6 +176,8 @@ class DataTests(unittest.TestCase):
         data.validate_snapshot(common)
         self.assertEqual(set(common['stocks']), set(core.CORE))
         self.assertEqual(common['feature_end'], '2026-10-09')
+        self.assertTrue(set(fixture.hashes) <= set(common['source_hashes']))
+        self.assertIn('ephemeral-derived-core6', common['source_hashes'])
         self.assertNotIn('company_overview', json.dumps(common))
         self.assertNotIn('DO_NOT_PERSIST_PROVIDER_BODY', json.dumps(common))
         with self.assertRaisesRegex(ValueError, 'NEW_EXECUTION_INPUTS_REQUIRED'):

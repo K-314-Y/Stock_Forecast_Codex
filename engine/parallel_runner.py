@@ -1,18 +1,38 @@
 """Same-snapshot forecast runner foundation. Live generation remains disabled in 10C-1."""
-import json
 from pathlib import Path
+from datetime import datetime, timezone
 
 from engine import minimal_trial as core
 from engine import one_session_dry_run as storage
 from engine.parallel_data import (CLASSES, PRIMARY, LOGISTIC, LIGHTGBM, MODEL_ROLES,
                                   digest, rules, stamp, validate_snapshot, probability_valid)
-from engine.parallel_models import load_model_freeze, predict_probabilities, validate_model_metadata
+from engine.parallel_data import specification_hash, common_from_execution
+from engine.parallel_models import load_model_freeze, predict_probabilities
 from models.linear_pool import predict as primary_predict
 
 
-def run_forward(*args, **kwargs):
-    """Reserved entry; cannot acquire, predict or freeze under the current Task mode."""
-    raise ValueError('TASK10C1_LIVE_FORECAST_DISABLED')
+def _require_live():
+    config = rules()
+    if config['live_generation_enabled'] is not True or config['task_mode'] != 'FORWARD_EXECUTION':
+        raise ValueError('TASK10C1_LIVE_FORECAST_DISABLED')
+
+
+def run_forward(inputs=None, scope=None, target_session=None, model_refs=None, store=None, **kwargs):
+    """Future gated entry: one-use Task 10B input, three models, one atomic Freeze."""
+    _require_live()
+    from engine.execution_policy import require_execution_scope
+    require_execution_scope(scope, target_session, **kwargs)
+    snapshot = common_from_execution(inputs, scope, target_session)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    bundle = _build_bundle(snapshot, model_refs, generated_at, generated_at)
+    frozen_at = datetime.now(timezone.utc).isoformat()
+    bundle['manifest']['freeze_time'] = frozen_at
+    for record in bundle['records']:
+        record['freeze_time'] = frozen_at
+    bundle['manifest']['forecast_refs'] = {r['model_id'] + '_' + r['ticker'] + '.json': digest(r)
+                                          for r in bundle['records']}
+    validate_bundle(bundle)
+    return _freeze_bundle(bundle, Path(store) / target_session)
 
 
 def build_probe_bundle(snapshot, model_refs, generated_at, freeze_time):
@@ -21,6 +41,15 @@ def build_probe_bundle(snapshot, model_refs, generated_at, freeze_time):
     config = rules()
     if not snapshot['synthetic'] or snapshot['target_session'] == config['target_session']:
         raise ValueError('SYNTHETIC_NON_TARGET_PROBE_ONLY')
+    return _build_bundle(snapshot, model_refs, generated_at, freeze_time)
+
+
+def _build_bundle(snapshot, model_refs, generated_at, freeze_time):
+    validate_snapshot(snapshot)
+    config = rules()
+    synthetic = snapshot['synthetic']
+    if not synthetic:
+        _require_live()
     if set(model_refs) != {LOGISTIC, LIGHTGBM}:
         raise ValueError('EXACTLY_TWO_SHADOWS_REQUIRED')
     created, frozen = stamp(generated_at), stamp(freeze_time)
@@ -32,7 +61,7 @@ def build_probe_bundle(snapshot, model_refs, generated_at, freeze_time):
     for model_id, pack in loaded.items():
         meta = pack['metadata']
         if (meta['model_id'] != model_id or meta['target_session'] != snapshot['target_session']
-                or not meta['synthetic'] or stamp(meta['created_at']) > created):
+                or meta['synthetic'] != synthetic or stamp(meta['created_at']) > created):
             raise ValueError('FROZEN_MODEL_NOT_ELIGIBLE')
         outputs[model_id] = predict_probabilities(model_id, pack['estimator'], rows)
     records, refs = [], {}
@@ -45,7 +74,7 @@ def build_probe_bundle(snapshot, model_refs, generated_at, freeze_time):
             else:
                 raw = outputs[model_id][index]
                 probabilities, percent = raw, None
-            record = dict(schema_version='parallel-forecast-probe-v1', model_id=model_id,
+            record = dict(schema_version='parallel-forecast-probe-v1' if synthetic else 'parallel-forecast-v1', model_id=model_id,
                           model_version=model_id, model_role=role, ticker=ticker,
                           target_session=snapshot['target_session'],
                           common_snapshot_hash=snapshot['common_snapshot_hash'],
@@ -53,8 +82,10 @@ def build_probe_bundle(snapshot, model_refs, generated_at, freeze_time):
                           probabilities=probabilities, raw_probabilities=raw, percent_probabilities=percent,
                           threshold_version=config['threshold_version'], baseline_version=config['baseline_version'],
                           feature_set_version=config['feature_set_versions'][model_id],
-                          relative_strength=config['relative_strength'], synthetic=True,
-                          exclude_from_trial_metrics=True)
+                          relative_strength=config['relative_strength'], synthetic=synthetic,
+                          exclude_from_trial_metrics=synthetic)
+            if not synthetic:
+                record['forecast_id'] = 'parallel_' + snapshot['target_session'].replace('-', '') + '_' + ticker + '_' + model_id
             path = model_id + '_' + ticker + '.json'
             records.append(record)
             refs[path] = digest(record)
@@ -62,8 +93,8 @@ def build_probe_bundle(snapshot, model_refs, generated_at, freeze_time):
                     common_snapshot_hash=snapshot['common_snapshot_hash'], primary_model=PRIMARY,
                     shadow_models=[LOGISTIC, LIGHTGBM], forecast_refs=refs,
                     model_freeze_refs={m: p['freeze_ref'] for m, p in loaded.items()},
-                    generated_at=generated_at, freeze_time=freeze_time, synthetic=True,
-                    exclude_from_trial_metrics=True, config_hash=digest(config),
+                    generated_at=generated_at, freeze_time=freeze_time, synthetic=synthetic,
+                    exclude_from_trial_metrics=synthetic, config_hash=specification_hash(),
                     promotion_allowed=False, outcome_status='NOT_ACQUIRED', scoring_status='NOT_RUN')
     bundle = dict(manifest=manifest, snapshot=snapshot, records=records)
     validate_bundle(bundle)
@@ -77,14 +108,14 @@ def validate_bundle(bundle):
     snapshot, manifest, records = (bundle[k] for k in ('snapshot', 'manifest', 'records'))
     validate_snapshot(snapshot)
     if (manifest['schema_version'] != 'parallel-forecast-bundle-v1'
-            or manifest['config_hash'] != digest(config)
+            or manifest['config_hash'] != specification_hash()
             or manifest['primary_model'] != PRIMARY or manifest['shadow_models'] != [LOGISTIC, LIGHTGBM]
-            or not snapshot['synthetic'] or manifest['synthetic'] is not True
-            or manifest['target_session'] == config['target_session']
+            or manifest['synthetic'] != snapshot['synthetic']
+            or (manifest['synthetic'] and manifest['target_session'] == config['target_session'])
             or manifest['common_snapshot_hash'] != snapshot['common_snapshot_hash']
             or manifest['target_session'] != snapshot['target_session']
             or manifest['promotion_allowed'] is not False or manifest['outcome_status'] != 'NOT_ACQUIRED'
-            or manifest['scoring_status'] != 'NOT_RUN' or manifest['exclude_from_trial_metrics'] is not True):
+            or manifest['scoring_status'] != 'NOT_RUN' or manifest['exclude_from_trial_metrics'] != snapshot['synthetic']):
         raise ValueError('BUNDLE_SEMANTICS_INVALID')
     if not stamp(snapshot['created_at']) <= stamp(manifest['generated_at']) <= stamp(manifest['freeze_time']) < stamp(snapshot['cutoff']):
         raise ValueError('BUNDLE_TIME_INVALID')
@@ -103,9 +134,15 @@ def validate_bundle(bundle):
                 or r['feature_set_version'] != config['feature_set_versions'][m]
                 or r['threshold_version'] != config['threshold_version']
                 or r['baseline_version'] != config['baseline_version']
-                or r['synthetic'] is not True or r['exclude_from_trial_metrics'] is not True
-                or set(r) & {'outcome', 'actual_class', 'score', 'forecast_id', 'headline', 'body'}):
+                or r['synthetic'] != snapshot['synthetic'] or r['exclude_from_trial_metrics'] != snapshot['synthetic']
+                or set(r) & {'outcome', 'actual_class', 'score', 'headline', 'body'}):
             raise ValueError('FORECAST_ROLE_OR_FREEZE_MISMATCH')
+        if snapshot['synthetic']:
+            if 'forecast_id' in r or r['schema_version'] != 'parallel-forecast-probe-v1':
+                raise ValueError('PROBE_REAL_ID_PROHIBITED')
+        elif (r['schema_version'] != 'parallel-forecast-v1'
+              or r.get('forecast_id') != 'parallel_' + manifest['target_session'].replace('-', '') + '_' + ticker + '_' + m):
+            raise ValueError('FORECAST_IDENTITY_INVALID')
         probability_valid(r['probabilities'])
         probability_valid(r['raw_probabilities'])
         if m == PRIMARY:
@@ -122,9 +159,20 @@ def validate_bundle(bundle):
 
 def freeze_probe_bundle(bundle, destination):
     """Atomic, create-only probe; never store synthetic entries in repo data/forecasts."""
+    if not bundle['snapshot']['synthetic']:
+        raise ValueError('SYNTHETIC_PROBE_ONLY')
+    return _freeze_bundle(bundle, destination)
+
+
+def _freeze_bundle(bundle, destination):
+    """Create-only directory commit; real path checks the actual cutoff before rename."""
     validate_bundle(bundle)
+    if not bundle['snapshot']['synthetic']:
+        _require_live()
+        from engine.execution_policy import require_execution_scope, SCOPE
+        require_execution_scope(SCOPE, bundle['manifest']['target_session'])
     destination = Path(destination).resolve()
-    if destination.is_relative_to(core.ROOT.resolve()):
+    if bundle['snapshot']['synthetic'] and destination.is_relative_to(core.ROOT.resolve()):
         raise ValueError('SYNTHETIC_PROBE_REQUIRES_EXTERNAL_TEMP_DIRECTORY')
     def build(stage):
         storage._seal(stage / 'snapshot.json', bundle['snapshot'])
@@ -132,11 +180,23 @@ def freeze_probe_bundle(bundle, destination):
             storage._seal(stage / (r['model_id'] + '_' + r['ticker'] + '.json'), r)
         storage._seal(stage / 'bundle.json', bundle['manifest'])
     with storage._locked(destination.parent):
-        storage._commit(destination, build)
+        def confirm(stage):
+            if not bundle['snapshot']['synthetic']:
+                _require_live()
+                if datetime.now(timezone.utc) >= stamp(bundle['snapshot']['cutoff']):
+                    raise ValueError('ACTUAL_FORECAST_FREEZE_CUTOFF_PASSED')
+        storage._commit(destination, build, confirm=confirm)
     return destination
 
 
 def read_probe_bundle(destination):
+    bundle = read_bundle(destination)
+    if not bundle['snapshot']['synthetic']:
+        raise ValueError('SYNTHETIC_PROBE_ONLY')
+    return bundle
+
+
+def read_bundle(destination):
     destination = Path(destination)
     manifest = core.read_frozen(destination / 'bundle.json')
     valid_names = {m + '_' + t + '.json' for m in MODEL_ROLES for t in core.CORE}
@@ -160,12 +220,12 @@ def comparison_rows(bundle):
     result = [dict(target_session=r['target_session'], ticker=r['ticker'], series=r['model_id'],
                    probabilities=r['probabilities'], common_snapshot_hash=r['common_snapshot_hash'],
                    outcome_join_key=[r['target_session'], r['ticker'], r['threshold_version']],
-                   outcome_status='PENDING_DATA', eligible=False) for r in bundle['records']]
+                   outcome_status='PENDING_DATA', eligible=not bundle['snapshot']['synthetic']) for r in bundle['records']]
     snap = bundle['snapshot']
     for ticker in core.CORE:
         for baseline, probs in snap['stocks'][ticker]['baselines'].items():
             result.append(dict(target_session=snap['target_session'], ticker=ticker, series=baseline,
                                probabilities=probs, common_snapshot_hash=snap['common_snapshot_hash'],
                                outcome_join_key=[snap['target_session'], ticker, snap['threshold_version']],
-                               outcome_status='PENDING_DATA', eligible=False))
+                               outcome_status='PENDING_DATA', eligible=not snap['synthetic']))
     return result
