@@ -42,11 +42,12 @@ LightGBMのgridはdepth/leaves制約を満たす24通り、100 boosting rounds�
 seed=314。Brier優先で選び、tieはconfig順。Log Loss/Accuracy/Macro F1/
 classwise calibration binsを記録。外側の性能推定とは呼ばずmodel-selection診断と明示する。
 
-日付group expanding: 最低60 train sessions + 20 validation sessions × 3 folds。
-利用可能期間の末尾60 sessionsを3分割、前の全sessionがtrain。
+日付group expanding: 最低60 train sessions + 20 validation sessionsで、利用可能な
+履歴から全ての完全なfoldを構成する。最低2 meaningful validation foldsを必要とする。
 同日のCore6をtrain/validation間で分けない。Outcome利用可能時刻はvalidation開始cutoff
 より厳密に前。最終学習はtargetより前かつmodel作成時点まで利用可能なOutcomeのみ。
-特徴量の補完なし、required欠損は拒否。threshold training_endは各feature_end以下。
+特徴量の補完なし、required欠損は拒否。実Forecastのthreshold training_endはfeature_end以下。
+歴史的学習は `PIT_PARALLEL_TRAINING.md` のfold-local Threshold replayを使用する。
 過去のavailable_atをpublication推測や現在の取得時刻から捏造しない。
 既存履歴はoffline quality検査対象だが、historical PIT provenance不足の場合は
 実モデルFreezeを拒否する。syntheticテスト成功は実データ性能の証明ではない。
@@ -65,7 +66,8 @@ future `run_forward` は既存scope gateとone-use入力を要求し、同じsna
 実行activation flagはmodel specification hashから分離し、後日のactivationで学習済み
 仕様hashを変えない。実行gateは生成・書込に適用し、immutable artifactのreadには適用しない。
 scoring entryは追加しない。将来同じOutcomeを6系列へjoinできるcomparison rowsを用意する。
-60 sessions経過でも自動昇格しない。昇格は別policy/review/approval。
+60 forward sessions経過でも自動昇格しない。120はより強い昇格評価の目標であり、
+学習開始条件でも2026-09-11以降の必須学習日数でもない。昇格は別policy/review/approval。
 
 ## Offline commands
 

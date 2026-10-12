@@ -29,7 +29,7 @@
   "calibration": "NONE_V1; diagnostics only, no full-history calibration fit",
   "relative_strength": {"status": "missing_optional", "reason": "RULE_NOT_FROZEN"},
   "seed": 314,
-  "walk_forward": {"split": "DATE_GROUPED_EXPANDING", "minimum_train_sessions": 60, "validation_sessions": 20, "folds": 3, "outcome_embargo": "outcome_available_at strictly before first validation cutoff"},
+  "walk_forward": {"split": "DATE_GROUPED_EXPANDING", "minimum_train_sessions": 60, "validation_sessions": 20, "folds": "ALL_SUPPORTED", "minimum_validation_folds": 2, "outcome_embargo": "outcome_available_at strictly before first validation cutoff"},
   "logistic": {"C": 1.0, "solver": "lbfgs", "penalty": "l2", "max_iter": 2000, "tol": 0.00000001},
   "lightgbm": {
     "objective": "multiclass", "num_class": 3,
