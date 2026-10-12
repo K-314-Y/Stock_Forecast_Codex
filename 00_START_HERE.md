@@ -22,7 +22,7 @@
 - recent_sessionsは直近31日だけ保持し、古い状態はarchiveへ。
 - 欠損検出・hash・Feature・Baseline・ScoringはLocal Code優先。
 - 異常がなければForecast LLMは最大1回。
-- 状態変更後はruntimeの内部3ファイルを更新し、Localで engine/refresh_runtime_snapshot.py を実行する。
+- 状態変更後はruntimeの内部3ファイルを更新し、Localで `python -m engine.refresh_runtime_snapshot` を実行する。
 - runtime_snapshot.jsonは生成物。通常Runではこれを最優先する。
 
 ## Core6 Freshness観測 / 取得フォールバック
@@ -34,3 +34,10 @@
 - Freshness観測は予測生成と分離する。08:45以降の観測でもFreezeを偽装・遡及せず、実時刻を保存する。
 
 現在の次作業詳細が必要な場合のみrun_checklist.jsonを読む。
+
+## 2026-10-13 個人・非商用Forward Trial
+- [Task 10B運用条件](docs/FRESH_EPHEMERAL_FORWARD_TRIAL.md) と `config/forward_trial_execution_policy.json` を適用する。
+- 許可スコープは `LOCAL_PERSONAL_NONCOMMERCIAL_FORWARD_TRIAL` のみ。Formal / Schedule / scoringは無効。
+- Task 10Cでは `engine.forward_trial_inputs.prepare_execution_inputs` にticker-boundの既存connector callableを渡し、Core6を当日新規取得する。provider responseをファイルへ中継・保存しない。
+- 保存済み10/9 Fresh evidence・Task 10A feature-input・保存済みderived snapshotを実行入力に再利用しない。
+- Task 10Bはゲート整備のみ。Forecast / Freeze / Forecast ID / probabilities / scoringは未実行。

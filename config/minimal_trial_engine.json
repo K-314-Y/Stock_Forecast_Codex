@@ -8,7 +8,7 @@
   "MINIMAL_TRIAL_ENGINE_TECHNICALLY_VALIDATED": true,
   "technical_validation_scope": "EXISTING_LOCAL_CACHE_THROUGH_2026-09-11_ONLY",
   "TECHNICAL_DATA_GATE": "PASS_OBSERVED_ROWS_6_OF_6",
-  "TERMS_GATE": "UNRESOLVED",
+  "TERMS_GATE": "CONDITIONAL_PERSONAL_NONCOMMERCIAL",
   "LIVE_DRY_RUN_READY": true,
   "BIGDATA_FRESH_BRIDGE_TECHNICALLY_VALIDATED": true,
   "LIVE_FEATURE_SNAPSHOT_TECHNICALLY_READY": true,
@@ -20,13 +20,13 @@
   "live_feature_spec": "config/minimal_live_feature_spec.json",
   "live_atr14_pct": "REMOVED",
   "live_volume_ratio_20d": "REMOVED",
-  "live_dry_run_blocker": "One-session dry run is technically ready; JPX/Historical Source Terms remain UNRESOLVED and no approval exists to start a Trial or Schedule",
+  "live_dry_run_blocker": "Formal, Schedule and scoring remain disabled; local personal/noncommercial Forecast requires new target-day ephemeral Fresh inputs.",
   "historical_quality_policy": "config/historical_data_quality_policy.json",
   "quarantine_manifest": "data/quality/historical_quarantine_manifest.json",
   "threshold_candidate": "config/trial_thresholds_candidate.json",
   "baseline_candidate": "config/trial_baselines_candidate.json",
   "OUTCOME_SCORING_SOURCE_VALIDATED": false,
-  "FREE_FORWARD_TRIAL_ENABLED": false,
+  "FREE_FORWARD_TRIAL_ENABLED": true,
   "DAILY_ACQUISITION_ENABLED": false,
   "SCHEDULES_ENABLED": false,
   "AUTOMATIC_LEARNING_ENABLED": false,
@@ -43,5 +43,11 @@
   "scoring_llm_calls": 0,
   "detailed_failure_review_auto_run": false,
   "no_performance_claim_from_engine_test": true,
-  "price_source": "JPX_DAILY_REPORT_TECHNICAL_PASS_TERMS_UNRESOLVED"
+  "price_source": "VALIDATED_HISTORY_PLUS_BIGDATA_FMP_EPHEMERAL_FRESH_CLOSE",
+  "terms_history": [
+    {
+      "TERMS_GATE": "UNRESOLVED"
+    }
+  ],
+  "execution_scope": "LOCAL_PERSONAL_NONCOMMERCIAL_FORWARD_TRIAL"
 }

@@ -1,0 +1,47 @@
+{
+  "schema_version": "forward-trial-execution-policy-v1",
+  "target_session": "2026-10-13",
+  "previous_session": "2026-10-09",
+  "historical_through": "2026-10-08",
+  "scope": "LOCAL_PERSONAL_NONCOMMERCIAL_FORWARD_TRIAL",
+  "terms_status": "CONDITIONAL_PERSONAL_NONCOMMERCIAL",
+  "terms_history": [
+    {
+      "status": "UNRESOLVED",
+      "retained": true
+    }
+  ],
+  "forecast_execution_enabled": true,
+  "forward_trial_enabled": true,
+  "formal_forecast_enabled": false,
+  "schedules_enabled": false,
+  "forecast_allowed": true,
+  "trial_enabled": true,
+  "fresh_strategy": "EPHEMERAL_RETRIEVAL",
+  "raw_provider_persistence": "DISABLED",
+  "derived_feature_persistence": "ENABLED",
+  "stored_fresh_forecast_reuse": false,
+  "provider_calls_per_execution_max": 6,
+  "retrievals_per_ticker": 1,
+  "automatic_retry": false,
+  "prohibited_scopes": [
+    "COMMERCIAL",
+    "THIRD_PARTY_DISTRIBUTION",
+    "FORECAST_API",
+    "SAAS",
+    "RAW_MARKET_DATA_REDISTRIBUTION",
+    "UNLIMITED_SCHEDULE",
+    "FORMAL_PRODUCTION"
+  ],
+  "approved_preparation_sha256": "d9770313041e7151c3a9f9c76e5c57eb1f01ce2c7b5c948b2ef27c8558d8e6d3",
+  "historical_snapshot": "data/forward_trial_history/2026-10-08/history.json",
+  "execution_entry": "engine.forward_trial_inputs.prepare_execution_inputs",
+  "forecast_generation_in_task_10b": false,
+  "scoring_enabled": false,
+  "legacy_evidence_status": [
+    "LEGACY_RETAINED_EVIDENCE",
+    "NOT_ELIGIBLE_FOR_FORECAST_REUSE",
+    "DO_NOT_USE_AS_FORWARD_TRIAL_INPUT",
+    "DELETE_RECOMMENDED"
+  ]
+}

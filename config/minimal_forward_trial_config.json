@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "config_version": "minimal-live-gap-reduction-candidate-2026-09-26",
+  "config_version": "personal-noncommercial-forward-trial-2026-10-13",
   "previous_config_version": "minimal-jpx-manual-candidate-2026-09-16",
   "earlier_config_versions": [
     "minimal-design-2026-09-15",
@@ -31,15 +31,15 @@
     "cost": "ZERO_ADDITIONAL_COST",
     "cost_status": "UNVERIFIED",
     "cost_basis": "Requested zero-cost policy; current official conditions not independently verified",
-    "terms_status": "TERMS_UNCLEAR",
+    "terms_status": "CONDITIONAL_PERSONAL_NONCOMMERCIAL",
     "scoring_llm_calls_budget": 0,
     "procedure": "../providers/jp/jpx_manual/README.md"
   },
   "run_mode": "FREE_FORWARD_TRIAL_PREP",
   "mode_name": "MINIMAL_FORWARD_TRIAL",
-  "mode_kind": "INACTIVE_EXECUTION_PROFILE_NOT_NEW_LIFECYCLE_STAGE",
-  "enabled": false,
-  "future_activation": "Human-approved FREE_FORWARD_TRIAL with this profile, after blockers close; never Formal Production",
+  "mode_kind": "CONDITIONAL_LOCAL_RESEARCH_EXECUTION_PROFILE",
+  "enabled": true,
+  "future_activation": "Task 10B authorizes the scoped execution gate; Task 10C performs actual on-session retrieval and Forecast execution.",
   "scope": {
     "market": "Japan",
     "core_version": "core-v1",
@@ -89,14 +89,14 @@
     "paid_provider_auto_use_enabled": false,
     "broker_automation_enabled": false,
     "formal_forecast_enabled": false,
-    "forward_trial_enabled": false,
-    "forecast_execution_enabled": false,
+    "forward_trial_enabled": true,
+    "forecast_execution_enabled": true,
     "outcome_scoring_execution_enabled": false,
     "failure_review_execution_enabled": false,
     "late_research_diagnostic_enabled": true
   },
   "inputs": {
-    "policy": "CANDIDATES_ONLY_NOT_CURRENTLY_ADMITTED",
+    "policy": "VALIDATED_HISTORY_AND_NEW_EPHEMERAL_FRESH_RETRIEVAL_ONLY",
     "stock_candidates": [
       "return_1d",
       "return_5d",
@@ -162,7 +162,7 @@
     "threshold_boundary_policy": "UP if r>=t; DOWN if r<=-t; otherwise FLAT (equal boundary directional)",
     "freeze_with_forecast": true,
     "probability_units": "AI percentage points; baseline empirical probabilities in [0,1], not rounded to 5-point bins",
-    "parameters_status": "UNRESOLVED_START_BLOCKER"
+    "parameters_status": "FROZEN_CANDIDATES_COMPATIBLE_UNCHANGED"
   },
   "scoring": {
     "engine": "LOCAL_CODE_ENGINE_TEST_ONLY",
@@ -174,7 +174,7 @@
     "same_forecast_set_comparison": true,
     "missing_outcome": "PENDING_DATA; score null",
     "price_contract": "price_source_contract.md",
-    "implementation_status": "ENGINE_TEST_ONLY_REAL_TRIAL_GATES_DISABLED"
+    "implementation_status": "SCORING_EXECUTION_DISABLED"
   },
   "failure_review": {
     "default_miss_type": "UNKNOWN",
@@ -225,27 +225,6 @@
     "medium_daily_evaluation": "DISABLED_FOR_MINIMAL_TRIAL",
     "long_daily_evaluation": "DISABLED_FOR_MINIMAL_TRIAL"
   },
-  "data_blockers": [
-    "BIGDATA_JP_PRICE_SEMANTICS",
-    "RAW_ADJUSTED_DEFINITION",
-    "JP_OUTCOME_OPEN_CLOSE_SOURCE",
-    "YFINANCE_TERMS_ELIGIBILITY",
-    "US_CONTINUITY_ADJUSTMENT",
-    "MATURITY_CONVENTION",
-    "ZERO_INCREMENTAL_COST",
-    "MUFG_HISTORICAL_OHLC_CONFLICT"
-  ],
-  "start_blockers": [
-    "ROLE_PRICE_CONTRACT",
-    "FEATURE_FORMULAS",
-    "BASELINE_PARAMETERS",
-    "THRESHOLD_IMPLEMENTATION_DETAILS",
-    "TRIAL_DURATION_PREREGISTRATION",
-    "IMMUTABLE_WRITER_AND_SCORER",
-    "LLM_BATCH_AND_PIT_GATE_TESTS",
-    "APPROVED_PROVIDER_REQUEST_PLAN",
-    "HUMAN_START_APPROVAL"
-  ],
   "reduction_vs_full": "QUALITATIVE ONLY",
   "late_research_diagnostic": {
     "status": "ENABLED_RESEARCH_ONLY",
@@ -258,5 +237,35 @@
     "scoring_eligible": false,
     "prediction_log_eligible": false,
     "purpose": "Exercise the research forecast path after 08:45 without backdating or contaminating formal/trial evaluation."
-  }
+  },
+  "execution_scope": "LOCAL_PERSONAL_NONCOMMERCIAL_FORWARD_TRIAL",
+  "terms_status": "CONDITIONAL_PERSONAL_NONCOMMERCIAL",
+  "terms_history": [
+    {
+      "status": "UNRESOLVED",
+      "meaning": "Previous terms gate; retained as history"
+    }
+  ],
+  "data_blockers_history": [
+    "BIGDATA_JP_PRICE_SEMANTICS",
+    "RAW_ADJUSTED_DEFINITION",
+    "JP_OUTCOME_OPEN_CLOSE_SOURCE",
+    "YFINANCE_TERMS_ELIGIBILITY",
+    "US_CONTINUITY_ADJUSTMENT",
+    "MATURITY_CONVENTION",
+    "ZERO_INCREMENTAL_COST",
+    "MUFG_HISTORICAL_OHLC_CONFLICT"
+  ],
+  "start_blockers_history": [
+    "ROLE_PRICE_CONTRACT",
+    "FEATURE_FORMULAS",
+    "BASELINE_PARAMETERS",
+    "THRESHOLD_IMPLEMENTATION_DETAILS",
+    "TRIAL_DURATION_PREREGISTRATION",
+    "IMMUTABLE_WRITER_AND_SCORER",
+    "LLM_BATCH_AND_PIT_GATE_TESTS",
+    "APPROVED_PROVIDER_REQUEST_PLAN",
+    "HUMAN_START_APPROVAL"
+  ],
+  "execution_policy": "config/forward_trial_execution_policy.json"
 }
