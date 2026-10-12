@@ -49,6 +49,12 @@ def _now():
     return datetime.now(timezone.utc)
 
 
+def _jpx_observation_day(now=None):
+    """JPX calendar observation day; evidence timestamps keep their timezone."""
+    now = _now() if now is None else now
+    return now.astimezone(ZoneInfo('Asia/Tokyo')).date().isoformat()
+
+
 def official_url(value):
     if not isinstance(value, str) or re.search(r'[\s\\\x00-\x1f\x7f]', unquote(value)):
         raise ValueError('UNSAFE_URL')
@@ -324,7 +330,7 @@ class RequestContext:
         if not isinstance(targets, dict):
             raise ValueError('RETRY_INTERRUPTED_REVIEW_REQUIRED')
         if self.observation_day is None:
-            self.observation_day = _now().astimezone(ZoneInfo('Asia/Tokyo')).date().isoformat()
+            self.observation_day = _jpx_observation_day()
         day = self.observation_day  # Never reset a running operation at midnight.
         value = targets.get(self.session)
         completed = False
@@ -1303,9 +1309,10 @@ def acquire_one(root, session, *, transport, resolution=None, run_state=None):
     if (now.tzinfo is None or calendar['jp_sessions'] != sorted(set(calendar['jp_sessions']))
             or not calendar['validation_range']['start'] <= session <= calendar['validation_range']['end']):
         raise ValueError('HISTORICAL_CALENDAR_OR_CLOCK_INVALID')
+    observation_day = _jpx_observation_day(now)
     prior = [s for s in calendar['jp_sessions'] if s < policy['forecast_target']]
     if (session not in policy['allowed_sessions'] or session not in calendar['jp_sessions']
-            or not prior or session >= prior[-1] or session >= now.date().isoformat()):
+            or not prior or session >= prior[-1] or session >= observation_day):
         raise ValueError('NOT_APPROVED_HISTORICAL_SESSION')
     store = root / 'data/jpx_historical_direct'
     with frozen._locked(store):
@@ -1331,7 +1338,8 @@ def acquire_one(root, session, *, transport, resolution=None, run_state=None):
                             _validated_saved(candidate, session, calendar)
                             return dict(status='SKIP_EXISTING_LOCAL', state='SKIP', code='EXISTING_VALID_LOCAL',
                                         local_validation='PASS', session=session, web_requests=0)
-                        if old.get('completed_at', now.isoformat())[:10] == now.date().isoformat():
+                        completed_at = datetime.fromisoformat(old.get('completed_at', now.isoformat()))
+                        if _jpx_observation_day(completed_at) == observation_day:
                             return dict(old, web_requests=0)
                         break
                 else:
