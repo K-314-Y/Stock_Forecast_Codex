@@ -223,7 +223,8 @@ def baselines(rows, frozen_threshold, min_conditional=30):
 
 
 def compact_snapshot(target_session, expected_previous_session, freeze_time, stock_inputs,
-                     market=None, news=None, metrics=None):
+                     market=None, news=None, metrics=None, *, allow_partial=False):
+    """Validate complete stocks; partial_ticker owns partial admission and its ledger."""
     date.fromisoformat(target_session)
     date.fromisoformat(expected_previous_session)
     freeze = datetime.fromisoformat(freeze_time)
@@ -232,7 +233,7 @@ def compact_snapshot(target_session, expected_previous_session, freeze_time, sto
         raise ValueError('INVALID_SNAPSHOT_FREEZE_TIME')
     if expected_previous_session >= target_session:
         raise ValueError('INVALID_PREVIOUS_SESSION')
-    if set(stock_inputs) != set(CORE):
+    if set(stock_inputs) - set(CORE) or (not allow_partial and set(stock_inputs) != set(CORE)):
         raise ValueError('CORE6_REQUIRED')
     market = {} if market is None else market
     news = {} if news is None else news
@@ -248,6 +249,8 @@ def compact_snapshot(target_session, expected_previous_session, freeze_time, sto
             raise ValueError('INVALID_OR_POST_FREEZE_MARKET_VALUE')
     compact = {}
     for ticker in CORE:
+        if allow_partial and ticker not in stock_inputs:
+            continue
         item = stock_inputs[ticker]
         if set(item) != {'features', 'threshold', 'baselines', 'provenance'}:
             raise ValueError('RAW_ROWS_OR_UNKNOWN_STOCK_INPUT')
@@ -287,7 +290,7 @@ def compact_snapshot(target_session, expected_previous_session, freeze_time, sto
             'expected_previous_session': expected_previous_session,
             'freeze_time': freeze_time,
             'market_common': common, 'stocks': compact,
-            'news': {ticker: news.get(ticker, []) for ticker in CORE},
+            'news': {ticker: news.get(ticker, []) for ticker in compact},
             'metrics': metrics or {'llm_calls': 0, 'input_tokens': 'UNKNOWN',
                                    'output_tokens': 'UNKNOWN', 'browser_actions': 0,
                                    'provider_calls': 0, 'news_items': sum(len(x) for x in news.values()),
