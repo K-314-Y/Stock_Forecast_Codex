@@ -200,7 +200,7 @@ create-only fileとhash sidecarを用い、indexからexact receiptを参照す�
 receiptを保存・検証してからindexへ登録し、途中crashや不完全な登録はfail closedとする。
 
 起動時およびgate評価時に、exact旧STOPの存在・hash・内容、許可reason、legacy分類、scope/target、
-receiptのhash/sidecar/state、現在のfix refs、sealed PASS validation refs、review evidenceを再検証する。
+receiptのhash/sidecar/state、最新generationの現在のfix refs、sealed PASS validation refs、review evidenceを再検証する。
 欠損・破損・不一致・未知schema・未登録receiptはfail closed。検証済みreceiptが指すexact legacy STOPだけを
 network gateから除外し、元のSTOPとactive履歴は永久保持する。他のactive STOPは通常どおり適用する。
 STOP fileをdelete/overwrite/rename/editした解除、全legacyの無条件無視、HARDのSOFTへの降格は禁止する。
@@ -209,6 +209,55 @@ HTTP_403、SECURITY_CHALLENGE、CAPTCHA、ACCESS_DENIED、BOT_CHALLENGE、authen
 HASH_CONFLICT、provenance conflict、OHLC inconsistency、SESSION_CONFLICT、現行v2 HARD STOP、
 元の証拠が壊れている/欠けているSTOPはこのmechanismで解除できない。
 既存SOFT resume、Retry、security/challenge detection、ForecastのPolicyは変更しない。
+
+### Explicit reviewed-release renewal / generations
+
+既存`legacy-hard-stop-reviewed-release-v1`はgeneration 1として永久保持する。
+同じexact legacy STOPに対するreleaseは、1 → 2 → 3の単一linear chainだけを許可する。
+source変更を自動承認しない。最新generationだけがcurrent filesystem/code stateを厳密にbindし、
+hash変更後は新たなexplicit manual renewalが登録されるまで通常gateをfail closedにする。
+
+古いgenerationもreceipt bytes/hash/必須sidecar、exact STOP reference/content/hash、
+sealed review/validation evidence、discovery replay、previous generation lineageを再検証する。
+古いfix refsは当時のvalidationと次generationの`previous_fix_refs`に一致するlineage値として検証し、
+current working-tree fileが昔のhashであることは要求しない。最新generationのsource検証は省略しない。
+
+renewal schemaは`legacy-hard-stop-reviewed-release-renewal-v1`。
+`policy_version`、`state=REVIEWED_RELEASE_RENEWAL`、`release_type`、整数`generation`、
+`previous_release_reference`/`previous_release_sha256`、`previous_stop_reference`/`legacy_stop_sha256`、
+`original_reason`、`session`、`scope`/`target`、`renewal_reason`、`root_cause`、`resolution`、
+`previous_fix_refs`、`fix_refs`、`validation_refs`、`review_evidence`、保存済みdiscovery inputs/replay、
+`review_decision=APPROVED`、`review_action=EXPLICIT_MANUAL_FUNCTION`、
+`base_code_commit`、`current_code_commit`、実際の`renewed_at`を保存する。identity/signatureを捏造しない。
+
+明示的renewal関数だけが、source変更後のbootstrap検証を行える。
+通常`Stops()`のcurrent-source gateを緩めるのではなく、同じ旧STOP・全previous receipt/evidence/lineageを
+先に検証し、old fix refsとbase commit、新current fix refsと実装commit、新sealed regression PASS証跡を
+照合する。Git working treeがclean、HEADが指定current commit、baseがancestorである場合だけ作成できる。
+最新generationではcurrent HEAD/clean treeとsource hashも検証する。
+generation 3以降のbaseはprevious generationのcurrent commitに一致させる。
+renewal用validationには既存全suiteに加えてrenewal chainとinterrupted-attempt testsのPASSを必須とする。
+
+receipt/sidecarをcreate-onlyでdurable保存・再検証してからindexへdurable登録する。
+orphan receipt、missing receipt/sidecar、duplicate generation、fork、飛び番、wrong previous SHA、
+wrong STOP、壊れたprevious evidenceはfail closed。途中crashはapprovalを意味しない。
+許可reasonは引き続きexact `LISTING_EMPTY_OR_AMBIGUOUS`だけ。他の未解除STOPが適用される場合は
+renewalを拒否する。403/CAPTCHA/security/bot/access denial、hash/provenance/OHLC/session conflict、
+現行HARD STOPやunrelated STOPへ流用しない。acquisition pathからrenewalを呼ばない。
+
+### Exact reviewed pre-v2 root attemptの一度だけのsupersession
+
+最新reviewed releaseがVALIDで、旧STOPのexact SHA/session/acquisition methodに一致する場合に限り、
+対象rootのfile setがexactに`start.json`、`start.sha256`、`failure.json`、`failure.sha256`であることを確認する。
+すべてregular fileでsymlinkなし、start/failureはsealedでvalid、start.session/method一致、
+failure内容・hashは旧STOPに完全一致、`attempts/`も追加artifactも存在しないことを必須とする。
+この状態だけをmanual reviewed legacy failureと認識し、旧bytesを保持して`attempts/000001/`を開始できる。
+
+unreviewed、wrong contents/hash/sidecar/session、追加listing/acquisition/request/raw/parsed、
+既存`attempts/`、新attempt開始後のcrash、unrelated interrupted attemptは従来の
+`INTERRUPTED_ATTEMPT_REVIEW_REQUIRED`またはintegrity STOPを維持する。
+store lockで一度だけの開始をserializeし、完了結果のない新attemptを次runで再開始しない。
+この例外はRetry budget、Raw再取得禁止、parser、SOFT resume、通常crash safetyを変更しない。
 
 ## 7. Official structure change / URL discovery / MISSING_ONLY
 

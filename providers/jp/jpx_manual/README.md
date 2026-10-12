@@ -1,5 +1,20 @@
 # JPX手動取得経路のローカル処理設計
 
+## Reviewed legacy release renewalと旧attempt（2026-10-12）
+
+[Policyのgeneration/supersession規定](../../../config/operation_policy_v2.md)に従う。
+既存receiptはgeneration 1として不変で保持し、明示的manual renewalでgeneration 2以降を追加する。
+latest generationだけがcurrent source/commitをbindする。以前のgenerationもsealed evidenceとlineageを
+再検証するが、旧source hashをcurrent working treeへ要求しない。source変更後はrenewalまでfail closed。
+renewalはclean/committed code、新regression PASS証跡、exact previous receipt/STOPを要求する。
+orphan、欠損sidecar、duplicate/fork、壊れたprevious evidenceはapproval扱いしない。
+通常取得・schedulerからrenewalを自動呼出ししない。
+
+rootにsealed start/failureの4ファイルだけがあり、failureがreview済みexact旧STOPに完全一致し、
+`attempts/`が存在しない場合だけ、旧証拠を保持して`attempts/000001/`を一度開始できる。
+新attemptの途中crash、追加artifact、未review/unrelated failureは従来どおり停止する。
+renewal/recognitionのoffline検証だけではfresh acquisitionを開始しない。
+
 ## Historical DirectのSTOP / Retry / Resume v2（2026-10-11）
 
 Historical Directだけ[確定Policy v2](../../../config/operation_policy_v2.md)へ移行。
