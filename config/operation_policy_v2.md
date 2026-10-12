@@ -176,6 +176,40 @@ SOFT_STOPは以下の**全条件**を満たせば、旧STOPファイルが存在
 分類根拠が不足する旧STOPは安全な解除を判断できないためHARD_STOP相当として確認を待つ。
 現行adapterは依然存在チェックで停止するため、実装移行前にSTOPを削除してv2 resumeを模倣してはならない。
 
+### Reviewed legacy HARD STOP release
+
+legacy HARD STOPの自動解除は禁止する。初版のmanual reviewed releaseは、
+`legacy=true`かつ`HARD_STOP_LEGACY_UNCLASSIFIED`で、元のreasonがexactに
+`LISTING_EMPTY_OR_AMBIGUOUS`の旧HTML-only listing discoveryだけに限定する。
+次の全条件を満たした場合のみ、明示的なmanual release command/functionにより解除できる。
+
+1. 元のSTOP file、内容、exact reference、SHA256、既存sidecarがすべて不変で検証PASS。
+2. 人間が明示的にAPPROVEDを指定してmanual releaseを実行する。ユーザーidentityや電子署名は捏造せず、
+   この明示的な関数/command実行をhuman reviewの記録とする。
+3. original reason、root cause、修正または現行replacement mechanismを特定し、現在のcode hashを参照する。
+4. official discoveryの保存済み証拠をofflineで再検証する。空HTML table、JSON endpoint抽出、
+   monthly list/monthly JSON schema、exact session href、official host、URL guessingなしを確認する。
+5. relevant fixture/regression、full offline、public-tree testsがPASSし、create-only validation evidenceがある。
+6. scope/target、旧STOP、review evidence、fix、validationのlineageをcreate-only receiptに保存する。
+
+receiptは`schema_version`、`policy_version`、`state=REVIEWED_RELEASE`、
+`release_type=LEGACY_HARD_STOP_MANUAL_REVIEW`、`previous_stop_reference`、`legacy_stop_sha256`、
+元のSTOP内容、`original_reason`、`session`、`scope`/`target`、`root_cause`、`resolution`、
+`review_evidence`、`fix_refs`、`validation_refs`、`review_decision=APPROVED`、実際の`released_at`を含む。
+create-only fileとhash sidecarを用い、indexからexact receiptを参照する。
+receiptを保存・検証してからindexへ登録し、途中crashや不完全な登録はfail closedとする。
+
+起動時およびgate評価時に、exact旧STOPの存在・hash・内容、許可reason、legacy分類、scope/target、
+receiptのhash/sidecar/state、現在のfix refs、sealed PASS validation refs、review evidenceを再検証する。
+欠損・破損・不一致・未知schema・未登録receiptはfail closed。検証済みreceiptが指すexact legacy STOPだけを
+network gateから除外し、元のSTOPとactive履歴は永久保持する。他のactive STOPは通常どおり適用する。
+STOP fileをdelete/overwrite/rename/editした解除、全legacyの無条件無視、HARDのSOFTへの降格は禁止する。
+
+HTTP_403、SECURITY_CHALLENGE、CAPTCHA、ACCESS_DENIED、BOT_CHALLENGE、authentication challenge、
+HASH_CONFLICT、provenance conflict、OHLC inconsistency、SESSION_CONFLICT、現行v2 HARD STOP、
+元の証拠が壊れている/欠けているSTOPはこのmechanismで解除できない。
+既存SOFT resume、Retry、security/challenge detection、ForecastのPolicyは変更しない。
+
 ## 7. Official structure change / URL discovery / MISSING_ONLY
 
 JPXの小さな構造変更は、official source確認済み、semantics不変、parser修正が局所的、
