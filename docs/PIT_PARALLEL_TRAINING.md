@@ -8,8 +8,8 @@ Primary、Core6、価格9特徴量、探索空間、Jev、Task 10Bのscope/persi
 価格basis、corporate action、availabilityを独立に確認する。取得済みと学習適格を区別する。
 
 `engine.parallel_training` はtarget_session×tickerの1対1joinを検査し、先行61セッション
-から既存8価格特徴量を再現する。threshold列はfold/final fitで束縛する学習parameterとして
-分離する。市場価格のavailabilityと、train-onlyで推定するthresholdのfit時刻を混同しない。
+から既存8価格特徴量を再現する。9番目のthreshold入力も、各targetのprevious session以前
+の履歴だけから同じアルゴリズムでreplayする。label用のfold/final Thresholdと入力を分離する。
 UNKNOWN、cutoff以降の入力、未解決basis/action、missingは除外し補完しない。
 同一日の銘柄を別foldにしない。Partial tickerはその銘柄だけを除外し、日付groupは維持する。
 
@@ -24,11 +24,13 @@ train_end以前、かつvalidation開始前に利用可能だった入力のみ�
 隔離/rolling-window規則を維持する。これはモデルの最低60 train datesとは別のthreshold
 warmup要件であり、未来のpromotion用60/120 forward sessionsとも別である。
 検証専用でproduction_candidate=false。候補登録・production Threshold書換えは行わない。
-各foldのtrain/validation target classとthreshold入力には同じfold-local値を使う。
-validationの市場8特徴量は各target以前、threshold fitは最初のvalidation cutoff以前。
+各foldのtrain/validation target classには同じfold-local値を使う。
+全9入力は各target以前、label Threshold fitは最初のvalidation cutoff以前。
+過去のthreshold入力をfold末の値や最終production値へ書き換えない。
 
 CV selection後だけFINAL_MODEL_LABEL_THRESHOLDとして既存のfrozen production thresholdを
-最終fitに使用する。最終trainingはapproved cutoff以前、target session以前に限定する。
+最終fitのlabelに使用する。入力はpre-T replayのまま。最終trainingはapproved cutoff以前、
+target session以前に限定する。
 Primaryのfrozen baseline/thresholdがそのvalidation時点で未成立なら、同窓のPrimary評価は
 UNAVAILABLEとして明示し、未来のfrozen tablesを過去へ適用しない。
 

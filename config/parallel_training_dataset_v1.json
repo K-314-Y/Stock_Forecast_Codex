@@ -8,7 +8,7 @@
   "source_schedule_rules": {},
   "source_schedule_note": "No historical source currently has a verified guaranteed availability upper bound. An expected publication date is not such a bound.",
   "feature_window": 61,
-  "threshold_input_policy": "Fold-fitted threshold is a training parameter, separately bound from the eight PIT price features. Apply one fold-local threshold to train/validation labels and the threshold input; never apply the final production threshold to CV.",
+  "threshold_input_policy": "All nine inputs must be pre-target, including the threshold input replayed only through the previous session. Fold-local thresholds define train/validation labels only; the final production threshold defines final-fit labels only. Neither may overwrite historical threshold inputs.",
   "cv_threshold_purpose": "CROSS_VALIDATION_ONLY",
   "cv_threshold_production_candidate": false,
   "final_label_threshold": "short-oc-p33-v1",
