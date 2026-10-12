@@ -1,0 +1,440 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:parallel-forward-freeze-v1",
+  "description": "Task 10C-1 local model freeze / synthetic bundle schema. Semantic validators enforce PIT, class sums, same snapshot, roles, feature allowlists and immutability. Real Forecast execution remains disabled.",
+  "$defs": {
+    "probabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "UP",
+        "FLAT",
+        "DOWN"
+      ],
+      "properties": {
+        "UP": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "FLAT": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "DOWN": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "forecast": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "model_id",
+        "model_version",
+        "model_role",
+        "ticker",
+        "target_session",
+        "common_snapshot_hash",
+        "generated_at",
+        "freeze_time",
+        "probabilities",
+        "raw_probabilities",
+        "percent_probabilities",
+        "threshold_version",
+        "baseline_version",
+        "feature_set_version",
+        "relative_strength",
+        "synthetic",
+        "exclude_from_trial_metrics"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "parallel-forecast-probe-v1"
+        },
+        "model_id": {
+          "enum": [
+            "equal-linear-pool-v1",
+            "multinomial-logistic-v1",
+            "lightgbm-multiclass-v1"
+          ]
+        },
+        "model_version": {
+          "type": "string"
+        },
+        "model_role": {
+          "enum": [
+            "PRIMARY",
+            "SHADOW"
+          ]
+        },
+        "ticker": {
+          "enum": [
+            "6857",
+            "7203",
+            "8306",
+            "1605",
+            "9433",
+            "3197"
+          ]
+        },
+        "target_session": {
+          "type": "string",
+          "format": "date"
+        },
+        "common_snapshot_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "freeze_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "probabilities": {
+          "$ref": "#/$defs/probabilities"
+        },
+        "raw_probabilities": {
+          "$ref": "#/$defs/probabilities"
+        },
+        "percent_probabilities": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "UP",
+                "FLAT",
+                "DOWN"
+              ],
+              "properties": {
+                "UP": {
+                  "type": "integer",
+                  "minimum": 5,
+                  "maximum": 95,
+                  "multipleOf": 5
+                },
+                "FLAT": {
+                  "type": "integer",
+                  "minimum": 5,
+                  "maximum": 95,
+                  "multipleOf": 5
+                },
+                "DOWN": {
+                  "type": "integer",
+                  "minimum": 5,
+                  "maximum": 95,
+                  "multipleOf": 5
+                }
+              }
+            }
+          ]
+        },
+        "threshold_version": {
+          "const": "short-oc-p33-v1"
+        },
+        "baseline_version": {
+          "const": "minimal-baselines-v1"
+        },
+        "feature_set_version": {
+          "type": "string"
+        },
+        "relative_strength": {
+          "const": {
+            "status": "missing_optional",
+            "reason": "RULE_NOT_FROZEN"
+          }
+        },
+        "synthetic": {
+          "const": true
+        },
+        "exclude_from_trial_metrics": {
+          "const": true
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "model_id",
+        "model_version",
+        "model_role",
+        "target_session",
+        "training_start",
+        "training_end",
+        "training_rows",
+        "feature_set_version",
+        "features",
+        "hyperparameters",
+        "effective_parameters",
+        "threshold_version",
+        "training_dataset_hash",
+        "walk_forward_summary",
+        "created_at",
+        "code_commit",
+        "config_hash",
+        "synthetic",
+        "seed",
+        "calibration",
+        "dependencies"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "parallel-model-freeze-v1"
+        },
+        "model_id": {
+          "enum": [
+            "multinomial-logistic-v1",
+            "lightgbm-multiclass-v1"
+          ]
+        },
+        "model_version": {
+          "type": "string"
+        },
+        "model_role": {
+          "const": "SHADOW"
+        },
+        "target_session": {
+          "type": "string",
+          "format": "date"
+        },
+        "training_start": {
+          "type": "string",
+          "format": "date"
+        },
+        "training_end": {
+          "type": "string",
+          "format": "date"
+        },
+        "training_rows": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "feature_set_version": {
+          "type": "string"
+        },
+        "features": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 9,
+          "maxItems": 9
+        },
+        "hyperparameters": {
+          "type": "object"
+        },
+        "effective_parameters": {
+          "type": "object"
+        },
+        "threshold_version": {
+          "const": "short-oc-p33-v1"
+        },
+        "training_dataset_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "walk_forward_summary": {
+          "type": "object"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "code_commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "config_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "synthetic": {
+          "type": "boolean"
+        },
+        "seed": {
+          "const": 314
+        },
+        "calibration": {
+          "const": "NONE_V1"
+        },
+        "dependencies": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "artifact_name": {
+          "enum": [
+            "estimator.joblib",
+            "estimator.txt"
+          ]
+        },
+        "artifact_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "target_session",
+        "common_snapshot_hash",
+        "primary_model",
+        "shadow_models",
+        "forecast_refs",
+        "model_freeze_refs",
+        "generated_at",
+        "freeze_time",
+        "synthetic",
+        "exclude_from_trial_metrics",
+        "config_hash",
+        "promotion_allowed",
+        "outcome_status",
+        "scoring_status"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "parallel-forecast-bundle-v1"
+        },
+        "target_session": {
+          "type": "string",
+          "format": "date"
+        },
+        "common_snapshot_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "primary_model": {
+          "const": "equal-linear-pool-v1"
+        },
+        "shadow_models": {
+          "const": [
+            "multinomial-logistic-v1",
+            "lightgbm-multiclass-v1"
+          ]
+        },
+        "forecast_refs": {
+          "type": "object",
+          "minProperties": 18,
+          "maxProperties": 18,
+          "propertyNames": {
+            "pattern": "^(equal-linear-pool-v1|multinomial-logistic-v1|lightgbm-multiclass-v1)_(6857|7203|8306|1605|9433|3197)\\.json$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "model_freeze_refs": {
+          "type": "object",
+          "minProperties": 2,
+          "maxProperties": 2,
+          "propertyNames": {
+            "enum": [
+              "multinomial-logistic-v1",
+              "lightgbm-multiclass-v1"
+            ]
+          },
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "path",
+              "metadata_hash",
+              "artifact_hash"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "metadata_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "artifact_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "freeze_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "synthetic": {
+          "const": true
+        },
+        "exclude_from_trial_metrics": {
+          "const": true
+        },
+        "config_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "promotion_allowed": {
+          "const": false
+        },
+        "outcome_status": {
+          "const": "NOT_ACQUIRED"
+        },
+        "scoring_status": {
+          "const": "NOT_RUN"
+        }
+      }
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest",
+        "snapshot",
+        "records"
+      ],
+      "properties": {
+        "manifest": {
+          "$ref": "#/$defs/manifest"
+        },
+        "snapshot": {
+          "type": "object"
+        },
+        "records": {
+          "type": "array",
+          "minItems": 18,
+          "maxItems": 18,
+          "items": {
+            "$ref": "#/$defs/forecast"
+          }
+        }
+      }
+    }
+  },
+  "anyOf": [
+    {
+      "$ref": "#/$defs/model"
+    },
+    {
+      "$ref": "#/$defs/bundle"
+    }
+  ]
+}

@@ -5,3 +5,6 @@ lightgbm==4.6.0
 joblib==1.6.0
 threadpoolctl==3.7.0
 cloudpickle==3.1.2
+jsonschema==4.26.0
+pypdf==6.9.1
+pdfplumber==0.11.9
