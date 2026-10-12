@@ -668,9 +668,52 @@ class ChallengeControls(HTMLParser):
         self.found |= len(self.signals) >= 2
 
 
+# Every decisive CHALLENGE prompt, widget/provider token and restriction marker
+# contains one of these hints before HTML entity decoding. Use the same Unicode
+# case matching as CHALLENGE as well as the cheap ASCII byte check below.
+_PDF_CHALLENGE_HINTS = ('captcha', 'challenge', 'verif', 'turnstile', 'cloudflare',
+                        'browser', 'human', 'auth', 'login', 'sign', 'access',
+                        'restrict', 'security', 'just',
+                        'アクセス', 'ロボット', 'セキュリティ')
+# "bot" alone is not a detector signal: bot prompts/controls require
+# "challenge", already covered. Random compressed bytes can contain "BOt".
+_PDF_CHALLENGE_BYTES = tuple(word.encode('utf-8') for word in _PDF_CHALLENGE_HINTS)
+_PDF_CHALLENGE_TEXT = re.compile('|'.join(_PDF_CHALLENGE_HINTS), re.I)
+# These tags can assemble fragmented/encoded visible prompts or script controls.
+# A real tag boundary is required: binary fragments such as <h1\x00 are not h1.
+_PDF_CHALLENGE_STRUCTURE = re.compile(
+    r'<(?:title|h[12]|form|iframe|button|input|script)(?=[\s/>])', re.I)
+# HTMLParser unescapes values (even on arbitrary tags and duplicate attributes).
+# Any ampersand in a detector-consumed attribute is ambiguous, including missing
+# semicolons, unknown entities, quoted '<'/'>' and invalid UTF-8 in that value.
+_PDF_CHALLENGE_ENTITY_ATTRIBUTE = re.compile(
+    r'''[\s/"'](?:id|class|name|role|action|src|type|value)\s*=+\s*'''
+    r'''(?:"[^"]*&|'[^']*&|[^\s>]*&)''', re.I)
+
+
+def _pdf_challenge_candidate(body):
+    """Conservative PDF-only prefilter; never a PDF validity decision.
+
+    Text/structure inspection uses exactly the full detector's UTF-8 replacement
+    decoding. Binary decoding errors alone cannot make a new interpretation;
+    ambiguous HTML controls/attributes always go through the unchanged parser.
+    Entity-only prose outside a control is not unescaped by CHALLENGE, and HTML
+    character references do not create markup in HTMLParser.
+    """
+    lowered = body.lower()
+    if any(hint in lowered for hint in _PDF_CHALLENGE_BYTES):
+        return True
+    text = body.decode('utf-8', errors='replace')
+    return bool(_PDF_CHALLENGE_TEXT.search(text)
+                or _PDF_CHALLENGE_STRUCTURE.search(text)
+                or _PDF_CHALLENGE_ENTITY_ATTRIBUTE.search(text))
+
+
 def _challenge(response):
     # Transport size limits bound the entire received body, including claimed
     # PDFs. A late HTML widget must not be hidden by MIME or a PDF prefix.
+    if response.body.startswith(b'%PDF-') and not _pdf_challenge_candidate(response.body):
+        return False
     text = response.body.decode('utf-8', errors='replace')
     # Inspect recognizable HTML controls even if MIME/magic claims PDF. Ordinary
     # prose (including extracted PDF text) containing a word is not a control.
