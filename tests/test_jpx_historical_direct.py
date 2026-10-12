@@ -23,6 +23,12 @@ PDF_URL = 'https://www.jpx.co.jp' + HREF
 NOW = datetime(2026, 10, 8, 5, 0, tzinfo=timezone.utc)
 
 
+class FixedDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return NOW.replace(tzinfo=None) if tz is None else NOW.astimezone(tz)
+
+
 def listing(session=SESSION, href=HREF, extra=''):
     return ('<!doctype html><html><head><title>東京証券取引所日報 | JPX</title></head>'
             '<body><h1>東京証券取引所日報</h1>' + extra + '<table><thead><tr>'
@@ -238,6 +244,7 @@ class AcquisitionTests(unittest.TestCase):
         self.manifest.write_text('{"entries":[]}')
         self.addCleanup(patch.stopall)
         patch.object(direct, '_now', return_value=NOW).start()
+        patch.object(parser, 'datetime', FixedDateTime).start()
         patch.object(socket.socket, 'connect', side_effect=AssertionError('TEST_NETWORK_FORBIDDEN')).start()
 
     def save_policy(self):
@@ -365,6 +372,9 @@ class AcquisitionTests(unittest.TestCase):
         for item in [parsed, *parsed['records']]:
             self.assertEqual(item['acquisition_method'], direct.METHOD)
             self.assertIsNone(item['browser_actor'])
+            self.assertEqual(item['retrieved_at'], NOW.isoformat())
+        for record in parsed['records']:
+            self.assertEqual(record['normalized_observation']['retrieved_at'], NOW.isoformat())
         self.assertTrue(all(r['acquisition'] == direct.METHOD and r['provider'] == 'JPX_DAILY_REPORT' for r in parsed['records']))
         self.assertEqual(parsed['core6_extraction'], '6/6')
         self.assertEqual(parsed['normalized_schema_validation'], 'PASS')
