@@ -1,0 +1,15 @@
+{
+  "version": "jev-news-filter-v1",
+  "input_kind": "UNSTRUCTURED_NEWS_ONLY",
+  "categories": ["direct_company", "sector", "macro", "cross_asset", "irrelevant"],
+  "score_range": [0, 3],
+  "score_levels": ["0: none", "1: weak", "2: meaningful", "3: strong"],
+  "keep_minimum": {"relevance": 2, "materiality": 2, "novelty": 1, "time_horizon_match": 2},
+  "time_horizon": "target Japan session open-to-close",
+  "deduplicate": "event_id OR normalized-headline SHA256; deterministic earliest available first",
+  "failure_policy": "DROP_JEV_UNAVAILABLE_OR_INVALID; unknown coverage is missing, not zero",
+  "raw_persistence": "DISABLED; headline/body/stdout/stderr never persisted",
+  "aggregate_candidates": ["material_news_count", "direct_company_news_count", "sector_news_count", "max_materiality", "has_direct_company_event"],
+  "active_model_inputs": [],
+  "polarity_counts": "NOT_IMPLEMENTED_NO_FROZEN_POLARITY_RULE"
+}

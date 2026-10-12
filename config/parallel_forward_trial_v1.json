@@ -1,0 +1,56 @@
+{
+  "version": "parallel-forward-trial-v1",
+  "scope": "LOCAL_PERSONAL_NONCOMMERCIAL_FORWARD_TRIAL",
+  "task_mode": "IMPLEMENTATION_OFFLINE_ONLY",
+  "target_session": "2026-10-13",
+  "live_generation_enabled": false,
+  "outcome_scoring_enabled": false,
+  "automatic_promotion_enabled": false,
+  "minimum_promotion_review_sessions": 60,
+  "stronger_promotion_review_sessions": 120,
+  "models": {
+    "equal-linear-pool-v1": "PRIMARY",
+    "multinomial-logistic-v1": "SHADOW",
+    "lightgbm-multiclass-v1": "SHADOW"
+  },
+  "threshold_version": "short-oc-p33-v1",
+  "baseline_version": "minimal-baselines-v1",
+  "snapshot_version": "common-pit-snapshot-v1",
+  "feature_set_versions": {
+    "equal-linear-pool-v1": "frozen-baselines-only-v1",
+    "multinomial-logistic-v1": "logistic-price9-v1",
+    "lightgbm-multiclass-v1": "lightgbm-price9-v1"
+  },
+  "required_features": ["ret_1d", "ret_5d", "momentum_20d", "momentum_60d", "realized_vol_20d", "MA20", "MA60", "MA_state", "threshold"],
+  "logistic_optional_candidates": ["topix_previous_return", "sox_overnight_return", "usdjpy_move", "us10y_move"],
+  "lightgbm_optional_candidates": ["topix_previous_return", "nikkei225_previous_return", "market_breadth", "sp500_overnight_return", "nasdaq_overnight_return", "sox_overnight_return", "usdjpy_move", "us10y_move", "jp10y_move", "vix_move", "wti_move", "brent_move", "gold_move", "sector_return", "peer_return", "material_news_count", "direct_company_news_count", "sector_news_count", "positive_material_event_count", "negative_material_event_count", "max_materiality", "has_direct_company_event"],
+  "active_optional_features": [],
+  "ticker_intercept": false,
+  "calibration": "NONE_V1; diagnostics only, no full-history calibration fit",
+  "relative_strength": {"status": "missing_optional", "reason": "RULE_NOT_FROZEN"},
+  "seed": 314,
+  "walk_forward": {"split": "DATE_GROUPED_EXPANDING", "minimum_train_sessions": 60, "validation_sessions": 20, "folds": 3, "outcome_embargo": "outcome_available_at strictly before first validation cutoff"},
+  "logistic": {"C": 1.0, "solver": "lbfgs", "penalty": "l2", "max_iter": 2000, "tol": 0.00000001},
+  "lightgbm": {
+    "objective": "multiclass", "num_class": 3,
+    "n_estimators": 100, "deterministic": true, "force_col_wise": true, "n_jobs": 1,
+    "search_space": {
+      "num_leaves": [7, 15], "max_depth": [3, 5], "learning_rate": [0.03, 0.05],
+      "min_data_in_leaf": [30, 60], "feature_fraction": [0.8, 1.0]
+    },
+    "maximum_candidates": 24,
+    "invalid_depth_leaf_pairs": "exclude num_leaves > 2**max_depth",
+    "selection_metric": "MULTICLASS_BRIER_SUM_NO_DIVISION_BY_3",
+    "early_stopping": false
+  },
+  "acquisition_universe": {
+    "company": ["OHLCV", "corporate_action", "earnings_date", "earnings_result", "guidance", "disclosure", "sector", "peers"],
+    "japan": ["TOPIX", "Nikkei225", "sector_indexes", "breadth", "turnover"],
+    "us": ["SP500", "Nasdaq", "SOX"],
+    "macro": ["USDJPY", "US10Y", "JP10Y", "VIX", "WTI", "Brent", "Gold"],
+    "news": ["company", "sector", "macro", "regulation", "central_banks", "geopolitics", "supply_chain", "commodities"]
+  },
+  "source_admission": "Existing Task 10B gate only; universe is research candidates, not provider admission or live acquisition authorization",
+  "future_promotion_candidates": ["Brier Skill > 0 vs Primary", "Brier Skill > 0 vs Base Rate", "Log Loss not materially worse", "Calibration not materially worse", "not driven by one ticker", "not driven by one regime"],
+  "promotion": "Separate policy, review and approval; never automatic, even after 60 sessions"
+}
