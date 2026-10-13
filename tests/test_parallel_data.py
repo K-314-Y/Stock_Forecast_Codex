@@ -157,7 +157,7 @@ class DataTests(unittest.TestCase):
                 data.validate_snapshot(snap)
 
     def test_existing_task10b_one_use_input_to_common_snapshot(self):
-        from tests.test_fresh_ephemeral import EphemeralFreshTests, PROJECT, TARGET
+        from tests.test_fresh_ephemeral import EphemeralFreshTests, PROJECT, TARGET, PREVIOUS
         from engine import execution_policy
         fixture = EphemeralFreshTests(methodName='runTest')
         fixture.setUp()
@@ -171,11 +171,15 @@ class DataTests(unittest.TestCase):
         bundle = json.loads(path.read_bytes())
         bundle['thresholds'] = fixture.thresholds
         fixture.write(path, bundle)
+        primary_path = fixture.root / 'config/primary_forward_trial_v1.json'
+        primary = json.loads(primary_path.read_bytes())
+        primary['frozen_contract_hashes']['config/trial_thresholds_candidate.json'] = core.sha256(path)
+        fixture.write(primary_path, primary)
         token, _ = fixture.prepare()
         common = data.common_from_execution(token, execution_policy.SCOPE, TARGET)
         data.validate_snapshot(common)
         self.assertEqual(set(common['stocks']), set(core.CORE))
-        self.assertEqual(common['feature_end'], '2026-10-09')
+        self.assertEqual(common['feature_end'], PREVIOUS)
         self.assertTrue(set(fixture.hashes) <= set(common['source_hashes']))
         self.assertIn('ephemeral-derived-core6', common['source_hashes'])
         self.assertNotIn('company_overview', json.dumps(common))

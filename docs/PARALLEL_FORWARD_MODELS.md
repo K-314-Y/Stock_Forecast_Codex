@@ -1,5 +1,9 @@
 # Task 10C-1: parallel models v1
 
+Task 10C-4 adds the independent [Primary Forward Trial](PRIMARY_FORWARD_TRIAL.md).
+The three-model runner below remains disabled while Shadow ML is TRAINING_BLOCKED.
+Actual Primary execution requires no Shadow estimator or historical ML admission.
+
 このTaskは実装・offline validationのみ。2026-10-13 Fresh取得、実Forecast/ID/Freeze、
 Outcome取得、Forward scoringは実行しない。Task 10Bのscope・terms/persistence・STOP・
 Retry/Resumeは変更しない。自動学習、自動昇格、scheduleは無効のまま。

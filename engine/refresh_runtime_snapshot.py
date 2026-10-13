@@ -16,6 +16,8 @@ def save(name: str, obj):
     )
 
 def refresh():
+    from engine.forward_trial_forecast import recover_runtime
+    recover_runtime()
     current = load("current_state.json")
     recent = load("recent_sessions.json")
     check = load("run_checklist.json")

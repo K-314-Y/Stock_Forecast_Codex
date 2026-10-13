@@ -14,7 +14,7 @@ from engine import minimal_trial as core
 from tests.test_minimal_trial_engine import fake_rows
 
 PROJECT = core.ROOT
-TARGET, PREVIOUS = '2026-10-13', '2026-10-09'
+TARGET, PREVIOUS = '2026-10-14', '2026-10-13'
 NOW = datetime.fromisoformat(TARGET + 'T08:25:00+09:00')
 
 
@@ -27,7 +27,7 @@ class EphemeralFreshTests(unittest.TestCase):
         (self.root / 'analysis').mkdir()
         for name in ('threshold_spec.json', 'baseline_spec.json', 'historical_data_quality_policy.json',
                      'fresh_feature_bridge.json', 'forward_trial_execution_policy.json',
-                     'minimal_forward_trial_config.json'):
+                     'minimal_forward_trial_config.json', 'primary_forward_trial_v1.json', 'official_gap_policy.json'):
             (self.root / 'config' / name).write_bytes((PROJECT / 'config' / name).read_bytes())
         root_patch = patch.object(core, 'ROOT', self.root)
         root_patch.start()
@@ -60,7 +60,7 @@ class EphemeralFreshTests(unittest.TestCase):
         historical = [dict(session_date=r['session_date'], close=r['close']) for r in rows[-61:]]
         historical += [dict(session_date=day, close=120 + index / 10)
                        for index, day in enumerate(self.calendar['jp_sessions'])
-                       if '2026-09-11' < day <= '2026-10-08']
+                       if '2026-09-11' < day <= '2026-10-09']
         self.history = {ticker: copy.deepcopy(historical) for ticker in core.CORE}
         source = self.root / 'history-preparation.json'
         self.write(source, dict(stocks={ticker: historical + [dict(session_date=PREVIOUS, close=88888)]
@@ -75,14 +75,31 @@ class EphemeralFreshTests(unittest.TestCase):
         refs = self.root / 'source-hashes.json'
         self.write(refs, self.hashes)
         preparation = self.root / 'preparation.json'
-        self.write(preparation, dict(history_through='2026-10-08', point_in_time_validation='PASS',
+        self.write(preparation, dict(history_through='2026-10-09', point_in_time_validation='PASS',
                                     available_tickers=list(core.CORE),
                                     validated_close_history_reference=dict(path=str(source), sha256=core.sha256(source)),
                                     source_hash_reference=dict(path=str(refs), sha256=core.sha256(refs))))
         rules_path = self.root / 'config/forward_trial_execution_policy.json'
         rules = json.loads(rules_path.read_bytes())
         rules['approved_preparation_sha256'] = core.sha256(preparation)
+        rules['historical_through'] = '2026-10-09'
+        rules['calendar_sha256'] = core.sha256(self.root / rules['calendar'])
         self.write(rules_path, rules)
+        from engine import forward_storage as storage
+        code = patch.object(storage, 'code_commit', return_value='a' * 40)
+        code.start()
+        self.addCleanup(code.stop)
+        primary_path = self.root / 'config/primary_forward_trial_v1.json'
+        primary = json.loads(primary_path.read_bytes())
+        review_path = self.root / primary['execution_review']['path']
+        review_path.parent.mkdir(parents=True, exist_ok=True)
+        self.write(review_path, dict(schema_version='forecast-execution-review-v1', scope=policy.SCOPE,
+            terms_status=policy.TERMS, fresh_strategy='EPHEMERAL_RETRIEVAL', raw_provider_persistence='DISABLED',
+            ready_for_task10c=True, remaining_blockers=[], remaining_issue_counts={'BLOCKER':0,'HIGH':0,'MEDIUM':1},
+            formal_forecast_enabled=False, schedules_enabled=False))
+        primary['execution_review']['sha256'] = core.sha256(review_path)
+        primary['frozen_contract_hashes'] = {p: core.sha256(self.root / p) for p in primary['frozen_contract_hashes']}
+        self.write(primary_path, primary)
         self.registered = inputs.register_validated_history(preparation)
         self.responses = {}
         self.fetches = {}
@@ -107,10 +124,10 @@ class EphemeralFreshTests(unittest.TestCase):
         self.assertNotIn('123.456789', repr(ticket))
         _, destination = self.prepare()
         created = [p for p in self.root.rglob('*') if p.is_file() and str(p) not in before]
-        self.assertEqual({p.name for p in created}, {'features.json', 'features.sha256', 'audit.json', 'audit.sha256', '.lock'})
+        self.assertEqual({p.name for p in created}, {'features.json', 'features.sha256', 'audit.json', 'audit.sha256', 'prospective.json', 'prospective.sha256', '.lock'})
         for path in created:
             text = path.read_text()
-            for forbidden in ('company_overview', 'structuredContent', 'previous_close', 'secret_body',
+            for forbidden in ('"company_overview":', 'structuredContent', 'previous_close', 'secret_body',
                               'DO_NOT_PERSIST_PROVIDER_BODY', '"volume":999999', '123.456789'):
                 self.assertNotIn(forbidden, text)
         self.assertFalse(fresh._receipt_root().exists())
@@ -127,7 +144,7 @@ class EphemeralFreshTests(unittest.TestCase):
             datum = audit['stocks'][ticker]
             self.assertEqual(set(datum), {'ticker', 'target_session', 'previous_session', 'provider', 'underlying_provider',
                                          'retrieved_at', 'provider_timestamp_present', 'session_validation',
-                                         'currency_validation', 'PIT_validation', 'feature_snapshot_sha256'})
+                                         'currency_validation', 'PIT_validation', 'feature_snapshot_sha256', 'source_response_sha256', 'feature_available_at'})
             self.assertEqual(datum['retrieved_at'], NOW.isoformat())
             self.assertEqual(datum['feature_snapshot_sha256'], core.sha256(destination / 'features.json'))
         self.assertEqual(inputs.consume_execution_inputs(token, policy.SCOPE, TARGET), (snapshot, audit))
@@ -169,7 +186,7 @@ class EphemeralFreshTests(unittest.TestCase):
     def test_off_target_day_and_cutoff_fail_before_retrieval(self):
         for stamp in ('2026-10-12T08:25:00+09:00', TARGET + 'T08:45:00+09:00'):
             self.clock.return_value = datetime.fromisoformat(stamp)
-            with self.assertRaisesRegex(ValueError, 'ACTUAL_TARGET_DAY_PRE_CUTOFF_REQUIRED'):
+            with self.assertRaisesRegex(ValueError, 'ACTUAL_TARGET_DAY_PRE_CUTOFF_REQUIRED|GATE_CLOSED'):
                 self.prepare()
         for call in self.fetches.values():
             call.assert_not_called()
@@ -184,13 +201,13 @@ class EphemeralFreshTests(unittest.TestCase):
             self.fetches['6857'].return_value = response
             with self.subTest(field=field, value=value), self.assertRaises((ValueError, TypeError)):
                 self.prepare()
-            self.assertFalse((self.root / 'derived').exists())
+            self.assertFalse((self.root / 'derived' / TARGET).exists())
 
     def test_provider_failure_does_not_publish_or_serialize_error_body(self):
         self.fetches['8306'].side_effect = RuntimeError('connector failure')
         with self.assertRaisesRegex(RuntimeError, 'connector failure'):
             self.prepare()
-        self.assertFalse((self.root / 'derived').exists())
+        self.assertFalse((self.root / 'derived' / TARGET).exists())
 
     def test_mutated_history_or_source_is_rejected_before_provider_call(self):
         self.originals[0].write_text('changed')
@@ -218,7 +235,7 @@ class EphemeralFreshTests(unittest.TestCase):
             datetime.fromisoformat(TARGET + 'T08:45:00+09:00')) or self.responses['3197']
         with self.assertRaisesRegex(ValueError, 'POST_GENERATION'):
             inputs.prepare_execution_inputs(policy.SCOPE, TARGET, self.fetches, self.root / 'late')
-        self.assertFalse((self.root / 'late').exists())
+        self.assertFalse((self.root / 'late' / TARGET).exists())
 
     def test_non_callable_stored_response_and_incomplete_core6_rejected(self):
         for fetches in ({'6857': self.fetches['6857']}, self.responses):

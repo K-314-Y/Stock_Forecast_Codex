@@ -78,8 +78,13 @@ class EngineTests(unittest.TestCase):
         self.assertIs(config['gates']['formal_forecast_enabled'], False)
         self.assertIs(config['gates']['schedules_enabled'], False)
         gates = execution_policy.execution_gates(runtime['execution_scope'], runtime['target_session'])
-        self.assertEqual(runtime['forecast_allowed'], gates['forecast_allowed'])
-        self.assertEqual(runtime['gates']['trial_enabled'], gates['trial_enabled'])
+        if runtime['target_session'] in execution_policy.load_policy()['permanently_not_run_sessions']:
+            # The retained Task 10B snapshot is audit history, not live permission.
+            self.assertFalse(gates['forecast_allowed'] or gates['trial_enabled'])
+            self.assertFalse(runtime['forecast_generated'])
+        else:
+            self.assertEqual(runtime['forecast_allowed'], gates['forecast_allowed'])
+            self.assertEqual(runtime['gates']['trial_enabled'], gates['trial_enabled'])
         self.assertFalse(execution_policy.execution_gates('COMMERCIAL', runtime['target_session'])['forecast_allowed'])
         for name in ('formal_forecast', 'forward_trial', 'score', 'prediction_log', 'backdating'):
             self.assertIs(runtime['late_research'][name], False)

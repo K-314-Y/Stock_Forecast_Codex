@@ -37,3 +37,34 @@ def round_primary(raw):
 def predict(baselines):
     raw = equal_pool(baselines)
     return raw, round_primary(raw)
+
+
+def forward_predict(baselines):
+    """Exact equal pool, floor, largest residual. Reject out-of-bound outputs.
+
+    The older bounded projection remains for existing offline probes. Primary
+    execution never clips or redistributes around a bound to alter this rule.
+    Fractions retain exact residual ties across the three baseline inputs.
+    """
+    from engine.primary_readiness import require_contract
+    require_contract()
+    equal_pool(baselines)  # validate input names, units and sum
+    order = ('FLAT', 'UP', 'DOWN')
+    raw = {c: sum(Fraction(str(p[c])) for p in baselines.values()) / 3 for c in CLASSES}
+    points = {c: raw[c] * 100 for c in CLASSES}
+    final = {c: int(points[c] // 5) * 5 for c in CLASSES}
+    remaining = 100 - sum(final.values())
+    if remaining < 0 or remaining % 5 or remaining > 15:
+        raise ValueError('POOL_ROUNDING_SUM_INVALID')
+    residual_order = sorted(order, key=lambda c: -(points[c] - final[c]))
+    for c in residual_order[:remaining // 5]:
+        final[c] += 5
+    if sum(final.values()) != 100 or any(v < 5 or v > 95 or v % 5 for v in final.values()):
+        raise ValueError('PRIMARY_ROUNDED_PROBABILITY_BOUNDS')
+    return {c: float(raw[c]) for c in CLASSES}, final
+
+
+def decision(percent):
+    winner = max(('FLAT', 'UP', 'DOWN'), key=lambda c: percent[c])
+    peak = percent[winner]
+    return winner, 'HIGH' if peak >= 60 else 'MEDIUM' if peak >= 45 else 'LOW'

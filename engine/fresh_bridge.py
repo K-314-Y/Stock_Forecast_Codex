@@ -161,7 +161,8 @@ def capture_fresh_close(ticker, expected_session, fetch_existing):
             raise ValueError('POST_RETRIEVAL_PROVIDER_TIMESTAMP')
     ticket = _FreshTicket()
     _FRESH_MEMORY[ticket] = (ticker, expected_session, observation['close_bridge'],
-                            started, completed, True)
+                            started, completed, True,
+                            hashlib.sha256(base.canonical_bytes(response)).hexdigest())
     # No response, source or observation survives this producer invocation.
     return ticket
 
@@ -170,7 +171,7 @@ def consume_fresh_close(ticket, ticker, previous, execution_started, cutoff):
     """One-use capability; saved raw receipts and feature snapshots are rejected."""
     if type(ticket) is not _FreshTicket or ticket not in _FRESH_MEMORY:
         raise ValueError('STORED_FRESH_NOT_ELIGIBLE_FOR_FORECAST_REUSE')
-    symbol, session, close, started, completed, timestamp_present = _FRESH_MEMORY.pop(ticket)
+    symbol, session, close, started, completed, timestamp_present, response_hash = _FRESH_MEMORY.pop(ticket)
     if symbol != ticker or session != previous:
         raise ValueError('BRIDGE_TICKER_SESSION_MISMATCH')
     if (started < execution_started or started.date() != execution_started.date()
@@ -179,6 +180,7 @@ def consume_fresh_close(ticket, ticker, previous, execution_started, cutoff):
     return close, dict(ticker=ticker, previous_session=previous, provider='BIGDATA',
                        underlying_provider='FMP', retrieved_at=completed.isoformat(),
                        provider_timestamp_present=timestamp_present,
+                       source_response_sha256=response_hash,
                        session_validation='PASS', currency_validation='PASS',
                        PIT_validation='PASS')
 

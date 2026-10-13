@@ -35,9 +35,11 @@
 
 現在の次作業詳細が必要な場合のみrun_checklist.jsonを読む。
 
-## 2026-10-13 個人・非商用Forward Trial
+## 個人・非商用Primary Forward Trial
 - [Task 10B運用条件](docs/FRESH_EPHEMERAL_FORWARD_TRIAL.md) と `config/forward_trial_execution_policy.json` を適用する。
 - 許可スコープは `LOCAL_PERSONAL_NONCOMMERCIAL_FORWARD_TRIAL` のみ。Formal / Schedule / scoringは無効。
 - Task 10Cでは `engine.forward_trial_inputs.prepare_execution_inputs` にticker-boundの既存connector callableを渡し、Core6を当日新規取得する。provider responseをファイルへ中継・保存しない。
 - 保存済み10/9 Fresh evidence・Task 10A feature-input・保存済みderived snapshotを実行入力に再利用しない。
-- Task 10Bはゲート整備のみ。Forecast / Freeze / Forecast ID / probabilities / scoringは未実行。
+- 2026-10-13は永久NOT_RUN。次回targetは既存検証済みカレンダーから選び、当日08:45前だけ実行する。
+- [Primary実行契約](docs/PRIMARY_FORWARD_TRIAL.md) を参照。runnerは `engine.forward_trial_forecast.run_forward`。Shadow MLはTRAINING_BLOCKEDのまま。
+- 新しいPrimary入力準備でprospective PIT台帳を保存する。保存済み台帳を実行入力に再利用しない。

@@ -1,7 +1,5 @@
 {
   "schema_version": "forward-trial-execution-policy-v1",
-  "target_session": "2026-10-13",
-  "previous_session": "2026-10-09",
   "historical_through": "2026-10-08",
   "scope": "LOCAL_PERSONAL_NONCOMMERCIAL_FORWARD_TRIAL",
   "terms_status": "CONDITIONAL_PERSONAL_NONCOMMERCIAL",
@@ -43,5 +41,13 @@
     "NOT_ELIGIBLE_FOR_FORECAST_REUSE",
     "DO_NOT_USE_AS_FORWARD_TRIAL_INPUT",
     "DELETE_RECOMMENDED"
-  ]
+  ],
+  "task10b_target_session": "2026-10-13",
+  "task10b_previous_session": "2026-10-09",
+  "target_policy": "NEXT_VALIDATED_JPX_SESSION",
+  "permanently_not_run_sessions": [
+    "2026-10-13"
+  ],
+  "calendar": "analysis/calendar_validation_2026-09-12.json",
+  "calendar_sha256": "611f69fe4b11b57c10daa5f5981a2e3ea13750cfe62d1518a90146c3e3738f51"
 }

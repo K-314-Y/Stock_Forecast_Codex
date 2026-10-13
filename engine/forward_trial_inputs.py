@@ -3,7 +3,7 @@ import hashlib
 import hmac
 import json
 import math
-from weakref import WeakSet
+from weakref import WeakKeyDictionary
 from datetime import datetime
 from pathlib import Path
 
@@ -13,6 +13,7 @@ from engine import historical_close_bridge as historical
 from engine import minimal_trial as core
 from engine import one_session_dry_run as artifacts
 from engine import partial_ticker as partial
+from engine import forward_storage as storage
 
 
 def _digest(value):
@@ -105,6 +106,32 @@ def load_validated_history(calendar, thresholds, execution_started):
     return record['stocks'], {str(path): core.sha256(path), **record['source_hashes']}
 
 
+def load_execution_history(calendar, thresholds, started, previous):
+    """Extend only with authenticated registered Historical Close derivatives.
+
+    No legacy Fresh raw or saved feature snapshots are eligible for extension.
+    Missing registration aborts before any provider call.
+    """
+    stocks, hashes = load_validated_history(calendar, thresholds, started)
+    stocks = {ticker: list(rows) for ticker, rows in stocks.items()}
+    cutoff = fresh._receipt_time(started.astimezone(fresh.JST).date().isoformat() + 'T08:45:00+09:00')
+    through = policy.load_policy()['historical_through']
+    for day in calendar['jp_sessions']:
+        if through < day < previous:
+            path = historical._root() / day / 'record.json'
+            if not path.exists():
+                raise ValueError('VALIDATED_HISTORICAL_EXTENSION_MISSING:' + day)
+            evidence = dict(source_role='FORECAST_FEATURE', source_kind='HISTORICAL_CLOSE_BRIDGE',
+                            path=str(path), sha256=core.sha256(path), session_end=day)
+            for ticker in core.CORE:
+                rows, refs = historical.verify(evidence, ticker, started, cutoff, previous)
+                if len(rows) != 1 or rows[0][0] != day:
+                    raise ValueError('HISTORICAL_EXTENSION_GRAIN_INVALID')
+                stocks[ticker].append(dict(session_date=day, close=rows[0][1]))
+                hashes.update(refs)
+    return stocks, hashes
+
+
 def _frozen_candidates(previous):
     hashes = {}
     bundles = {}
@@ -149,7 +176,7 @@ def _frozen_candidates(previous):
 class _ExecutionInputs:
     """In-process, one-use inputs. Persisted snapshot dictionaries cannot replace it."""
     __slots__ = ('_snapshot', '_audit', '_started', '_used', '_snapshot_hash',
-                 '_audit_hash', '_source_hashes', '__weakref__')
+                 '_audit_hash', '_source_hashes', '_bundle_id', '_ledger_path', '__weakref__')
 
     def __init__(self, snapshot, audit, started, source_hashes):
         self._snapshot, self._audit, self._started, self._used = snapshot, audit, started, False
@@ -157,46 +184,73 @@ class _ExecutionInputs:
         self._source_hashes = dict(source_hashes)
 
 
-_CURRENT_INPUTS = WeakSet()
+_CURRENT_INPUTS = WeakKeyDictionary()
 
 
-def consume_execution_inputs(inputs, scope, target_session):
+def consume_execution_inputs(inputs, scope, target_session, *, with_binding=False):
     policy.require_execution_scope(scope, target_session)
-    now = fresh._receipt_now()
+    now = policy.require_execution_clock(target_session)
     cutoff = fresh._receipt_time(target_session + 'T08:45:00+09:00')
     if (type(inputs) is not _ExecutionInputs or inputs not in _CURRENT_INPUTS
             or inputs._used or inputs._snapshot['target_session'] != target_session
             or now < inputs._started or now >= cutoff):
         raise ValueError('NEW_EXECUTION_INPUTS_REQUIRED')
-    _CURRENT_INPUTS.remove(inputs)
+    binding = _CURRENT_INPUTS.pop(inputs)
     inputs._used = True
-    if _digest(inputs._snapshot) != inputs._snapshot_hash or _digest(inputs._audit) != inputs._audit_hash:
+    if ((_digest(inputs._snapshot), _digest(inputs._audit), inputs._started,
+         inputs._source_hashes, inputs._bundle_id, inputs._ledger_path) != binding):
         raise ValueError('EXECUTION_INPUT_CHANGED_AFTER_DERIVATION')
     artifacts._unchanged(inputs._source_hashes)
-    return inputs._snapshot, inputs._audit
+    import copy
+    if with_binding:
+        return (copy.deepcopy(inputs._snapshot), copy.deepcopy(inputs._audit),
+                dict(started=binding[2], source_hashes=copy.deepcopy(binding[3]),
+                     bundle_id=binding[4], ledger_path=binding[5]))
+    return copy.deepcopy(inputs._snapshot), copy.deepcopy(inputs._audit)
 
 
-def prepare_execution_inputs(scope, target_session, fetch_by_ticker, store, *,
+def prepare_execution_inputs(scope, target_session, fetch_by_ticker, store=None, *,
                              scheduled=False, formal=False):
-    """Task 10C input entry: six fresh calls, existing features, metadata-only audit.
+    """Serialize preparations at target-session grain before any Fresh call."""
+    from engine.primary_readiness import require_contract
+    cfg = require_contract()
+    policy.require_execution_scope(scope, target_session, scheduled=scheduled, formal=formal)
+    policy.require_execution_clock(target_session)
+    store = Path(store or core.ROOT / cfg['prospective_store'] / 'pre_session')
+    with storage.locked(store):
+        if (store / target_session).exists():
+            raise FileExistsError('PROSPECTIVE_TARGET_TICKER_CREATE_ONLY')
+        return _prepare_execution_inputs(scope, target_session, fetch_by_ticker, store,
+                                         scheduled=scheduled, formal=formal)
+
+
+def _prepare_execution_inputs(scope, target_session, fetch_by_ticker, store, *,
+                              scheduled=False, formal=False):
+    """Task 10C input entry: at most six Fresh calls, derived/audit-only storage.
 
     Callables are trusted existing connector invocations, never paths or payloads.
-    This entry performs no Forecast generation, IDs, Freeze or scoring.
+    This entry reserves a bundle identity but creates no Forecast/ID/Freeze/score.
     """
     policy.require_execution_scope(scope, target_session, scheduled=scheduled, formal=formal)
+    from engine.primary_readiness import require_contract
+    from engine import prospective_pit as ledger
+    cfg = require_contract()
+    commit = storage.code_commit()
     if (not isinstance(fetch_by_ticker, dict) or set(fetch_by_ticker) != set(core.CORE)
-            or any(not callable(call) for call in fetch_by_ticker.values())):
+            or any(call is not None and not callable(call) for call in fetch_by_ticker.values())):
         raise ValueError('CORE6_NEW_FRESH_RETRIEVAL_REQUIRED')
-    started = fresh._receipt_now()
+    started = policy.require_execution_clock(target_session)
     cutoff = fresh._receipt_time(target_session + 'T08:45:00+09:00')
     if started.astimezone(fresh.JST).date().isoformat() != target_session or started >= cutoff:
         raise ValueError('ACTUAL_TARGET_DAY_PRE_CUTOFF_REQUIRED')
     hashes = {}
-    calendar = artifacts._load(core.ROOT / 'analysis/calendar_validation_2026-09-12.json', hashes)
+    calendar_path = core.ROOT / policy.load_policy()['calendar']
+    calendar = policy.validated_calendar()
+    hashes[str(calendar_path)] = core.sha256(calendar_path)
     previous = fresh.expected_previous(calendar, target_session)
-    rules = policy.load_policy()
-    if previous != rules['previous_session']:
-        raise ValueError('PREVIOUS_SESSION_POLICY_MISMATCH')
+    for path in ('config/forward_trial_execution_policy.json', 'config/minimal_forward_trial_config.json',
+                 'config/primary_forward_trial_v1.json'):
+        artifacts._load(core.ROOT / path, hashes)
     bridge_config = artifacts._load(core.ROOT / 'config/fresh_feature_bridge.json', hashes)
     if (bridge_config['BIGDATA_FRESH_BRIDGE_TECHNICALLY_VALIDATED'] is not True
             or bridge_config['provider'] != 'BIGDATA' or bridge_config['underlying_provider'] != 'FMP'
@@ -206,37 +260,57 @@ def prepare_execution_inputs(scope, target_session, fetch_by_ticker, store, *,
         raise ValueError('BRIDGE_UNVALIDATED_OR_STALE')
     thresholds, candidate_hashes = _frozen_candidates(previous)
     hashes.update(candidate_hashes)
-    histories, history_hashes = load_validated_history(calendar, thresholds, started)
+    histories, history_hashes = load_execution_history(calendar, thresholds, started, previous)
     hashes.update(history_hashes)
-    stocks, audits = {}, {}
+    stocks, audits, statuses = {}, {}, {}
     for ticker in core.CORE:
+        if fetch_by_ticker[ticker] is None:
+            statuses[ticker] = dict(status=partial.SKIPPED, reason='REQUIRED_INPUT_ABSENT',
+                                    missing_inputs=['fresh_retrieval'])
+            continue
         ticket = fresh.capture_fresh_close(ticker, previous, fetch_by_ticker[ticker])
         close, audit = fresh.consume_fresh_close(ticket, ticker, previous, started, cutoff)
         rows = histories[ticker] + [dict(session_date=previous, close=close)]
         computed = core.features(rows, thresholds[ticker])
         # Allowlist persistence; core.features also returns previous_close.
         stocks[ticker] = {name: computed[name] for name in core.REQUIRED_FEATURES}
-        audits[ticker] = dict(audit, target_session=target_session)
+        available = policy.require_execution_clock(target_session, started)
+        audits[ticker] = dict(audit, target_session=target_session, feature_available_at=available.isoformat())
+        statuses[ticker] = dict(status='FORECAST_INPUT_READY')
         del ticket, close, rows, computed
+    if not stocks:
+        raise ValueError('NO_PROCESSABLE_TICKERS')
     snapshot = dict(schema_version='derived-fresh-features-v1', scope=scope,
                     target_session=target_session, previous_session=previous, stocks=stocks)
     snapshot_hash = _digest(snapshot)
     for audit in audits.values():
         audit['feature_snapshot_sha256'] = snapshot_hash
+    bundle_id = ledger.new_bundle_id(target_session)
     audit_record = dict(schema_version='ephemeral-fresh-audit-v1', scope=scope,
-                        target_session=target_session, stocks=audits)
-    destination = Path(store) / target_session / started.strftime('%Y%m%dT%H%M%S%fZ')
+                        target_session=target_session, stocks=audits, ticker_statuses=statuses,
+                        forecast_bundle_id=bundle_id)
+    destination = Path(store or core.ROOT / cfg['prospective_store'] / 'pre_session') / target_session
+    pre = ledger.build_pre_session(snapshot, audit_record, hashes, commit)
     def build(stage):
         artifacts._seal(stage / 'features.json', snapshot)
         artifacts._seal(stage / 'audit.json', audit_record)
+        artifacts._seal(stage / 'prospective.json', pre)
     def confirm(stage):
         now = fresh._receipt_now()
         if now < started or now >= cutoff:
             raise ValueError('INPUT_PREPARATION_MISSED_CUTOFF')
         policy.require_execution_scope(scope, target_session, scheduled=scheduled, formal=formal)
         artifacts._unchanged(hashes)
-    with artifacts._locked(destination.parent):
-        artifacts._commit(destination, build, confirm)
+        require_contract()
+        ledger.validate_pre_session(core.read_frozen(stage / 'prospective.json'))
+        if storage.code_commit() != commit:
+            raise ValueError('CODE_CHANGED_DURING_PREPARATION')
+        policy.require_execution_clock(target_session, started)
+    artifacts._commit(destination, build, confirm)
     inputs = _ExecutionInputs(snapshot, audit_record, started, hashes)
-    _CURRENT_INPUTS.add(inputs)
+    inputs._bundle_id, inputs._ledger_path = bundle_id, str(destination / 'prospective.json')
+    inputs._source_hashes.update({str(destination / name): core.sha256(destination / name)
+                                 for name in ('features.json', 'audit.json', 'prospective.json')})
+    _CURRENT_INPUTS[inputs] = (inputs._snapshot_hash, inputs._audit_hash, started,
+                             dict(inputs._source_hashes), inputs._bundle_id, inputs._ledger_path)
     return inputs, destination

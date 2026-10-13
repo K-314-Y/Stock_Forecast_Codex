@@ -41,3 +41,14 @@ The 2026-09-18 `RAW_SOURCE_HASH_MISMATCH` fixture remains unchanged and is
 `MEDIUM_NON_BLOCKING_LEGACY_FIXTURE`; the validated current historical chain
 is independent. Task 10B does not generate Forecasts, Freeze, IDs, probabilities,
 relative strength predictions, Brier scores or Candidate Discovery.
+
+## Task 10C-4 target renewal
+
+2026-10-13 is permanently NOT_RUN; the original review remains immutable history.
+The explicit Task 10C-4 decision authorizes only the next validated JPX session,
+selected by the existing calendar and actual target-day pre-08:45 clock.
+Scope, terms and raw persistence remain unchanged. See
+[Primary contract](PRIMARY_FORWARD_TRIAL.md) for the real runner, observed
+prospective ledger, partial coverage and crash recovery. Historical ML blockers
+do not gate Primary. Missing required new historical continuity still blocks
+execution before Fresh acquisition.
