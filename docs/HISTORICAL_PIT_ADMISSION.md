@@ -49,3 +49,33 @@ expanding folds (60 train / 20 validation dates), and no BLOCKER/HIGH. Otherwise
 metrics are unavailable, model hashes are null, and Shadow ML remains blocked.
 Primary next-session readiness is a separate read-only assessment; this task
 never activates or generates a Forecast, including after the cutoff.
+
+## Reproduce the local audit
+
+Use the existing model environment and an actual analysis timestamp. The target
+is only an exclusion boundary; this command does not execute a Forecast.
+
+```bash
+PYTHONPATH=. .venv/bin/python -m engine.parallel_training_local \
+  --target-session YYYY-MM-DD --training-as-of ACTUAL_ISO_TIMESTAMP
+PYTHONPATH=. .venv/bin/python -m scripts.check_historical_admission \
+  data/training/parallel_models_v1/DATASET_SHA \
+  --output analysis/historical_pit_admission_v1/independent_data_quality.json
+PYTHONPATH=.:tests .venv/bin/python -m unittest test_historical_admission test_parallel_training
+```
+
+A BLOCKED dataset exits with code 2 and still writes its immutable exclusion
+artifact. Files include `dataset.json`, `source_provenance.csv`,
+`feature_revision_proofs.json` and `source_admission_audit.json`. The CSV contains
+metadata at artifact/field/ticker/session grain; no price column. Its checksum
+is bound into the dataset hash. The JSON supplements have sidecar seals.
+
+The independent checker imports no engine code and re-reads the original local
+sources. Its current-inventory assertions intentionally detect any change in
+source admission/basis flags. Re-audit those assertions when a future source
+contract changes; never delete a failing check just to admit more rows.
+
+An Outcome source candidate count includes JPX/Yahoo overlaps. Count deduplicated
+Outcome keys separately; never add overlapping provider rows to the training
+population. Local auto-adjust reconstruction is a transformation check, not an
+independent provider or historical availability verification.

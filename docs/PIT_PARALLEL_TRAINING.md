@@ -43,3 +43,9 @@ validation PASS、BLOCKER/HIGHなしの場合だけ。synthetic testは実デー
 
 STOP時にも除外metadataとaudit artifactを保存できるが、実学習/Freezeは開始しない。
 historical availabilityとOutcome source/basisが証明できない現行inventoryを適格化しない。
+
+Task 10C-3 adds the [historical admission audit](HISTORICAL_PIT_ADMISSION.md):
+explicit PASS/FAIL/UNKNOWN gates, separate feature/Outcome sources, guarded JPX
+preference, machine-readable revision proofs, and source-field/session lineage.
+The Task 10C-2 report remains historical evidence; current rules are in
+`config/historical_pit_admission_v1.json`. No real source schedule is activated.

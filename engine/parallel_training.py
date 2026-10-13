@@ -6,6 +6,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from engine import historical_admission as admission
 from engine import historical_quality as quality
 from engine import minimal_trial as core
 from engine import one_session_dry_run as storage
@@ -101,6 +102,10 @@ def replay_price_features(history, sessions, target_session, *, synthetic=False)
                 reasons.append('FEATURE_AFTER_CUTOFF')
             if any(not r['feature_integrity'] or r['quality_issues'] for r in known):
                 reasons.append('SKIPPED_FEATURE_INTEGRITY')
+            checks = admission.feature_checks(known, prior, day, bounds) if not synthetic else None
+            if checks is not None:
+                reasons.extend('ADMISSION_' + k.upper() + '_' + v for k, v in checks.items()
+                               if v not in ('PASS', 'NOT_APPLICABLE'))
             features, input_threshold = None, None
             if not reasons:
                 values = [dict(session_date=r['target_session'], **r['values']) for r in known]
@@ -132,6 +137,7 @@ def replay_price_features(history, sessions, target_session, *, synthetic=False)
                 feature_availability_rules=sorted({b['rule_version'] for b in bounds if b['rule_version']}),
                 feature_set_version={m: v for m, v in rules()['feature_set_versions'].items() if m != 'equal-linear-pool-v1'},
                 features=features, feature_reasons=sorted(set(reasons)),
+                **({'admission_checks': checks} if checks is not None else {}),
                 feature_threshold_metadata=input_threshold,
                 input_sessions=prior, cutoff=cutoff.isoformat(),
                 source_refs=sorted({ref for r in known for ref in r['source_refs']}), synthetic=synthetic))
@@ -180,7 +186,17 @@ def build_dataset(features, outcomes, target_session, training_as_of, source_has
                 raise ValueError('TRAINING_SOURCE_OR_MODE_MISMATCH')
         if f and (f['feature_availability_status'] == 'UNKNOWN' or f['feature_available_at'] is None):
             reasons.append('FEATURE_AVAILABILITY_UNKNOWN')
+        checks = admission.row_checks(f, out, bound, asof) if not synthetic else None
+        if checks is not None:
+            if reasons and admission.classify(checks) == 'ADMITTED_PIT':
+                checks['PIT'] = 'FAIL'
+            reasons.extend('ADMISSION_' + k.upper() + '_' + v for k, v in checks.items()
+                           if v not in ('PASS', 'NOT_APPLICABLE'))
         common = dict(target_session=day, ticker=ticker,
+            **(dict(admission_checks=checks, admission_status=admission.classify(checks),
+                    outcome_source=out['source'] if out else None,
+                    outcome_admission=out.get('outcome_admission') if out else None,
+                    outcome_selection_reason=out.get('selection_reason') if out else None) if checks is not None else {}),
             feature_session=f['feature_session'] if f else None,
             feature_available_at=f['feature_available_at'] if f else None,
             feature_availability_status=f['feature_availability_status'] if f else 'UNKNOWN',
@@ -378,6 +394,16 @@ def write_dataset(dataset, root):
     checksum = dataset_sha256(dataset)
     destination = Path(root) / checksum
     def build(stage):
+        detail = dataset.get('admission_audit')
+        if detail:
+            import hashlib
+            matrix = admission.provenance_csv(detail['source_provenance_groups'])
+            if hashlib.sha256(matrix).hexdigest() != detail['source_provenance_csv_sha256']:
+                raise ValueError('PROVENANCE_MATRIX_HASH_MISMATCH')
+            (stage / 'source_provenance.csv').write_bytes(matrix)
+            storage._seal(stage / 'feature_revision_proofs.json', detail['feature_proofs'])
+            storage._seal(stage / 'source_admission_audit.json', {k: v for k, v in detail.items()
+                if k not in ('source_provenance_groups', 'feature_proofs')})
         storage._seal(stage / 'dataset.json', dict(dataset, dataset_sha256=checksum))
     with storage._locked(destination.parent):
         storage._commit(destination, build)
@@ -388,6 +414,15 @@ def read_dataset(destination):
     value = core.read_frozen(Path(destination) / 'dataset.json')
     if value['dataset_sha256'] != dataset_sha256(value):
         raise ValueError('TRAINING_DATASET_HASH_MISMATCH')
+    if value.get('admission_audit'):
+        detail = value['admission_audit']
+        if core.sha256(Path(destination) / 'source_provenance.csv') != detail['source_provenance_csv_sha256']:
+            raise ValueError('PROVENANCE_MATRIX_HASH_MISMATCH')
+        if core.read_frozen(Path(destination) / 'feature_revision_proofs.json') != detail['feature_proofs']:
+            raise ValueError('FEATURE_PROOF_HASH_MISMATCH')
+        if core.read_frozen(Path(destination) / 'source_admission_audit.json') != {k: v for k, v in detail.items()
+                if k not in ('source_provenance_groups', 'feature_proofs')}:
+            raise ValueError('SOURCE_ADMISSION_AUDIT_MISMATCH')
     return value
 
 
@@ -404,6 +439,10 @@ def require_training_ready(dataset):
         if core.sha256(core.ROOT / name) != expected:
             raise ValueError('TRAINING_SOURCE_CHANGED')
     for row in rows:
+        if (row.get('admission_status') != 'ADMITTED_PIT'
+                or set(row.get('admission_checks', {})) != set(admission.policy()['required_gates'])
+                or admission.classify(row['admission_checks']) != 'ADMITTED_PIT'):
+            raise ValueError('TRAINING_ADMISSION_NOT_PROVEN')
         if (row['target_session'] >= dataset['target_session']
                 or row['feature_session'] >= row['target_session']
                 or row['feature_availability_status'] == 'UNKNOWN'

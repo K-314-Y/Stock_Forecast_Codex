@@ -1,0 +1,25 @@
+{
+  "version": "historical-source-evidence-v1",
+  "reviewed_on": "2026-10-13",
+  "review_time_is_historical_publication_evidence": false,
+  "sources": [
+    {"id": "yahoo-adjustment", "url": "https://help.yahoo.com/kb/adjusted-close-sln28256.html", "finding": "Split and dividend multipliers apply to dates before their events. Adjustment is retrospective; current values are not an original vintage."},
+    {"id": "yfinance-1.7.0-history", "url": "https://raw.githubusercontent.com/ranaroussi/yfinance/1.7.0/yfinance/scrapers/history.py", "finding": "history defaults back_adjust=False, prepost=False; auto_adjust defaults True but acquisition explicitly supplied False. repair=False was explicit. The library cache delay is not a provider publication SLA."},
+    {"id": "yfinance-1.7.0-utils", "url": "https://raw.githubusercontent.com/ranaroussi/yfinance/1.7.0/yfinance/utils.py", "finding": "parse_quotes maps quote open/high/low/close/volume; adjclose is separate. auto_adjust scales O/H/L by AdjClose/Close and replaces Close by AdjClose. back_adjust scales O/H/L but leaves Close unchanged, so it must not be treated as same-factor OHLC."},
+    {"id": "yfinance-repairs", "url": "https://ranaroussi.github.io/yfinance/advanced/price_repair.html", "finding": "Documents missing split adjustments, corrupt/missing values, currency mixups and later Yahoo corrections. Uniform rescaling is not the only possible revision."},
+    {"id": "yahoo-delays", "url": "https://help.yahoo.com/kb/exchanges-data-providers-yahoo-finance-sln2310.html", "finding": "Tokyo .T quotes listed with 20-minute delay. Historical charts/daily updates have distinct provider attribution. This does not guarantee exact cached historical daily-bar vintage availability or finality."},
+    {"id": "jpx-hours", "url": "https://www.jpx.co.jp/equities/trading/domestic/01.html", "finding": "Current afternoon session ends 15:30 JST; session completion is not report publication or provider delivery."},
+    {"id": "jpx-hours-change", "url": "https://www.jpx.co.jp/equities/trading/strengthening/cg27su00000054qm-att/mklp77000000bgxl.pdf", "finding": "2024-11-05 trading-hour extension changes certain publication times. No historical cached-bar finality guarantee established."},
+    {"id": "jpx-daily", "url": "https://www.jpx.co.jp/markets/statistics-equities/daily/index.html", "finding": "Official daily-report entry point. No verified guaranteed timestamp bound for these exact retained vintages."},
+    {"id": "advantest-split", "url": "https://www.advantest.com/en/news/2023/rki43h0000000we9-att/E_Info_20230519_02.pdf", "finding": "Four-for-one split, record 2023-09-30, effective 2023-10-01. Provider event 2023-09-28 is a separate trading-date label."},
+    {"id": "toyota-split", "url": "https://global.toyota/pages/global_toyota/ir/stock/share/commonstocksplit_20210512_02_en.pdf", "finding": "Five-for-one split, record 2021-09-30; split-basis trading from 2021-09-29."},
+    {"id": "kddi-split", "url": "https://news.kddi.com/kddi/corporate/english/ir-news/2024/11/01/7547.html", "finding": "Two-for-one split, record 2025-03-31, effective 2025-04-01. Provider event 2025-03-28 is a separate trading-date label."},
+    {"id": "yfinance-rights", "url": "https://github.com/ranaroussi/yfinance", "finding": "Research/personal-use positioning is not a data license or resolution of Yahoo terms."}
+  ],
+  "availability_contracts": [
+    {"source": "YAHOO_FINANCE_YFINANCE", "availability_contract_version": "yahoo-observed-cache-v1", "availability": "OBSERVED", "original_historical_availability": "UNKNOWN", "provider_update_contract": "NO_GUARANTEED_HISTORICAL_DAILY_BAR_BOUND_VERIFIED", "market_session_close": "15:00 before 2024-11-05; 15:30 thereafter", "conservative_delay": null, "schedule_rule_admitted": false},
+    {"source": "JPX_DAILY_REPORT", "availability_contract_version": "jpx-retained-observation-v1", "availability": "OBSERVED only for manifest download evidence; otherwise UNKNOWN", "original_historical_availability": "UNKNOWN", "provider_update_contract": "EXPECTED_PUBLICATION_DAY_IS_NOT_EXACT_VINTAGE_BOUND", "market_session_close": "15:30 for retained 2026 sessions", "conservative_delay": null, "schedule_rule_admitted": false}
+  ],
+  "corporate_action_completeness": "UNKNOWN; local split/dividend lists do not prove absence of reverse splits, mergers, listing/basis changes or subsequent corrections across the whole period. No absence inferred from zero event count.",
+  "historical_feature_close_bridge": "Current operational compatibility of a recent forward window is not five-year historical Outcome or vintage admission. Close-only evidence cannot fill missing Open."
+}
