@@ -24,7 +24,8 @@ Task 10C-6c; deleting that file is not an approved release.
 
 `scripts/install_jpx_publication_monitor.py --arm` installs five small user
 systemd unit definitions and performs the first check immediately. The poll
-timer waits one hour and repeats one hour after each completed service run.
+timer waits one hour plus five seconds (startup margin) and repeats one hour
+after each completed service run.
 A lock plus a durable pre-request reservation prevents concurrent/replayed
 requests. The one-hour clock guard also applies to manual invocations. An
 interrupted reservation, malformed JSON, identity conflict, unexpected redirect,

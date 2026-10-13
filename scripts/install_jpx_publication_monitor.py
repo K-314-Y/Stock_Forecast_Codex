@@ -29,7 +29,7 @@ def units(root, python):
                             'OnFailure=' + unit + '-disarm.service\n' + common +
                             'ExecStart=' + command + '\n'),
         unit + '.timer': ('[Unit]\nDescription=Hourly bounded JPX publication monitor\n'
-                          '[Timer]\nOnActiveSec=1h\nOnUnitInactiveSec=1h\n'
+                          '[Timer]\nOnActiveSec=1h 5s\nOnUnitInactiveSec=1h\n'
                           'AccuracySec=1s\nUnit=' + unit + '.service\n'
                           '[Install]\nWantedBy=timers.target\n'),
         unit + '-deadline.service': ('[Unit]\nDescription=JPX deadline bookkeeping without HTTP\n' +
