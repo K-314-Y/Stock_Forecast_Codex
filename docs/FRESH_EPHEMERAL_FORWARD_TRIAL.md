@@ -52,3 +52,14 @@ Scope, terms and raw persistence remain unchanged. See
 prospective ledger, partial coverage and crash recovery. Historical ML blockers
 do not gate Primary. Missing required new historical continuity still blocks
 execution before Fresh acquisition.
+
+
+## Permanent NOT_RUN evidence
+
+The tracked execution policy preserves the 10/13 decision and forbids deadline
+backfill. New missed sessions live in `state/forecast_not_run_sessions/`, outside
+Git. `execution_policy.not_run_sessions()` is the authoritative static/runtime
+union used by target selection, Forecast and prospective PIT validation. Runtime
+records are create-once, hash-verified, aware-time evidence with target/reason/source;
+conflicting duplicates, corruption, missing published records and clock rollback
+fail closed. Deadline bookkeeping cannot dirty tracked execution configuration.

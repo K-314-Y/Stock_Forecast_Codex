@@ -31,9 +31,34 @@ root cause、resolution、review/fix/validation refs、discovery replay、APPROV
 既存store lockでreceipt保存・検証後にcurrent indexへ登録する。元STOPとactive履歴は保持する。
 
 起動と各gateで参照証拠を再検証し、exact旧STOPだけgateから除外する。他STOPは有効のまま。
-receipt破損/削除、sidecar欠損、index登録漏れ、fix hash変化、validation不一致はfail closed。
+receipt破損/削除、sidecar欠損、index登録漏れ、取得component変化、validation不一致はfail closed。
 crash後の孤立receiptも自動採用しない。証拠を削除して復旧しない。
-将来fixが変わる場合の新しいreview/revision手順は、この初版では提供しない。
+初回release作成時は現在のfix bytesと検証reportを照合する。既存generationのfix refsは
+歴史的commit/blobと照合し、実行時は最新receiptのcomponent fingerprintを確認する。
 
 evidenceはGit対象外のdata/analysisに保存する。解除は取得許可・Retry予算・Forecast gateを変更せず、
 取得再開やForecast生成を実行しない。
+
+
+## Task 10C-OPT-1 component binding
+
+`current_code_commit`と`base_code_commit`はaudit lineageとして保持する。
+既存renewalの実行にrepository全体のHEAD一致やclean treeを要求しない。
+新しい明示的renewalの作成時だけ、従来のclean/current commit検証を維持する。
+
+全byteを固定する範囲はhistorical_direct、historical_policy_v2、legacy_stop_review、
+parser、acquisitionと、jpx_daily_acquisition_config、normalized_market_schema、operation_policy_v2。
+取得call graphからminimal_trialのCORE/ROOT、canonical/hash/read_frozen/raw resolver/parsed reader、
+official_gapのcalendar定数、expected_gap_sessions/stage_existing_pdf、storageのlock/seal/fsyncを固定する。
+選択した関数の全sourceに加え、module imports、関数header/decorator/default、module-level実行文を
+固定し、annotated/conditional/global再代入も検出する。取得に到達しない関数bodyは除外する。
+README、monitor、Shadow ML、report、独立した無関係engine moduleは含めない。
+
+新receiptは`jpx-acquisition-components-v1`を持つ。既存generation 2–4では記録commitの
+component snapshotを使用し、このrefactorの完全一致したbefore/after集合だけを
+`config/jpx_acquisition_binding_v1.json`で許可する。mapperとmappingは指定baseを祖先に持つ
+最初の導入commitからbyte変更を許さない。比較済みmapping bytesだけをstrict JSONで解析する。
+任意のsource差分やmapping編集は許可しない。generation 1は古いchain内で証拠を検証し、
+最新のunanchored legacy receiptを自動承認しない。最適化だけのgeneration 5は不要。
+
+詳細と検証結果は[EFFICIENCY_HARDENING.md](EFFICIENCY_HARDENING.md)を参照。

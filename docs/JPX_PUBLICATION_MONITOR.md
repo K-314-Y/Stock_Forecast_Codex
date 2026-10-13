@@ -9,20 +9,21 @@ The local `state/jpx_publication_monitor/2026-10-13/context.json` checkpoint was
 created offline while the existing historical STOP gate passed at the approved
 baseline HEAD. It binds the official HTML → monthly list → October JSON discovery
 evidence and 46 existing source/policy/STOP/release files by SHA256. Each run
-checks those identities, the validated calendar, branch, armed commit and monitor
-code before requesting the **exact observed monthly JSON URL**. No endpoint or
+checks those identities, the validated calendar, branch, armed target/deadline and
+monitor code hashes before requesting the **exact observed monthly JSON URL**. No endpoint or
 PDF name is guessed. Only a response hash and lightweight publication metadata
 are retained; response bodies are not saved.
 
 This independently authorized monitor checkpoint is not a historical release.
-Original STOP, generation3 and generation4 remain immutable. A new code commit
-does not renew generation4's HEAD binding: Task 10C-6c must explicitly revalidate
-the existing historical gate before acquisition. The monitor cannot do that.
+Original STOP and generations 1–4 remain immutable. The acquisition gate now
+binds relevant component fingerprints; unrelated commits require no renewal.
+Task 10C-6c must still pass the historical gate before acquisition. The monitor
+cannot authorize acquisition or create a release.
 Any change to the pinned context stops further metadata requests as well.
 The monitor's own persistent security STOP also requires human review before
 Task 10C-6c; deleting that file is not an approved release.
 
-`scripts/install_jpx_publication_monitor.py --arm` installs five small user
+`scripts/install_jpx_publication_monitor.py --arm` installs six small user
 systemd unit definitions and performs the first check immediately. The poll
 timer waits one hour plus five seconds (startup margin) and repeats one hour
 after each completed service run.
@@ -41,11 +42,21 @@ A separate **non-network deadline guard** remains scheduled at exactly 08:45 JST
 (one-second timer precision, subject to OS scheduling). With Persistent=true it
 also finalizes after a machine restart/sleep. Every polling invocation checks the
 deadline first, so waking late cannot cause an HTTP request or catch-up Forecast.
-At the cutoff the guard records expiry and appends only 2026-10-14 to the existing
-`permanently_not_run_sessions` execution-policy list unless independently
-completed usable history is evidenced in time. It disables both timers. This
-durable policy edit may leave a local Git modification; scheduled runs never
-commit or push. Policy persistence failures retry bookkeeping hourly without HTTP.
+At the cutoff the guard records 2026-10-14 in the ignored, hash-verified runtime
+NOT_RUN ledger unless independently completed usable history is evidenced in
+time. The tracked policy stays read-only and retains the static backfill ban and
+10/13 exclusion. All consumers use the static/runtime union. A durable inventory
+detects missing published records; readers fail closed during incomplete
+publication and a writer can restore the exact reserved record.
+
+Deadline bookkeeping reserves at most three attempts durably, including the
+initial attempt, with at least one hour between reservations across restarts.
+The explicit driver has two sleeps at most; deadline service uses `Restart=no`.
+Final failure latches STOP and scheduled execution disables both timers. An
+OnFailure service independently attempts STOP publication and timer disarm if
+the deadline service crashes or times out. Retry paths perform no HTTP, even
+after clock rollback. Completed results in the retry envelope recover a crash
+before latest/STOP publication. Filesystem errors remain fail closed.
 
 Task 10C-6c may supply `task10c6c_completion.json` in the monitor state directory
 using the existing canonical `{index, sha256}` envelope. Required index fields:
@@ -78,3 +89,11 @@ Focused offline suite:
 ```sh
 PYTHONPATH=.:tests .venv/bin/python -m unittest test_jpx_publication_monitor
 ```
+
+Task 10C-OPT-1 changes only the improvement branch. Existing live timers and state
+are untouched. `armed.code_commit` remains audit lineage; repository HEAD equality
+is no longer an execution condition. Monitor/installer/NOT_RUN module hashes,
+protected references, policy/calendar/discovery identities and target/deadline
+remain gates. Existing two-module armed receipts remain readable, but cannot
+authorize changed code lacking the new ledger hash. Deploy/rearm decisions belong
+to a separate task after the current monitor ends.
