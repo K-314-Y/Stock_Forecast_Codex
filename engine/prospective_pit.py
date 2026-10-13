@@ -67,7 +67,7 @@ def validate_pre_session(value):
             or not value['rows'] or set(value['ticker_statuses']) != set(core.CORE)):
         raise ValueError('PROSPECTIVE_PRE_SCHEMA_OR_HASH')
     target = value['target_session']
-    if target in policy.load_policy()['permanently_not_run_sessions']:
+    if target in policy.not_run_sessions():
         raise ValueError('PERMANENTLY_NOT_RUN_SESSION')
     previous = fresh.expected_previous(policy.validated_calendar(), target)
     seen = set()

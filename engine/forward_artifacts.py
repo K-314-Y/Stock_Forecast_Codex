@@ -101,4 +101,3 @@ def _validated_jpx(parsed_path, target_session, now):
         raise ValueError('JPX_PARSED_CHANGED_DURING_VALIDATION')
     return parsed, dict(parsed_sha256=parsed_hash, manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
                        raw_sha256=parsed['source_file_hash'])
-

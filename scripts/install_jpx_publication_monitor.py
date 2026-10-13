@@ -33,12 +33,17 @@ def units(root, python):
                           'AccuracySec=1s\nUnit=' + unit + '.service\n'
                           '[Install]\nWantedBy=timers.target\n'),
         unit + '-deadline.service': ('[Unit]\nDescription=JPX deadline bookkeeping without HTTP\n' +
+                                     'OnFailure=' + unit + '-deadline-disarm.service\n' +
                                      common + 'ExecStart=' + command + ' --finalize\n'
-                                     'Restart=on-failure\nRestartSec=1h\n'),
+                                     'Restart=no\nTimeoutStartSec=7500s\n'),
         unit + '-deadline.timer': ('[Unit]\nDescription=JPX monitor hard deadline JST\n'
                                    '[Timer]\nOnCalendar=2026-10-14 08:45:00 Asia/Tokyo\n'
                                    'Persistent=true\nAccuracySec=1s\nUnit=' + unit + '-deadline.service\n'
                                    '[Install]\nWantedBy=timers.target\n'),
+        unit + '-deadline-disarm.service': ('[Unit]\nDescription=Latch deadline STOP and disarm both timers\n'
+                                           '[Service]\nType=oneshot\nExecStart=-' + command + ' --finalization-failed\n'
+                                           'ExecStart=/usr/bin/systemctl --user disable --now ' + unit +
+                                           '.timer ' + unit + '-deadline.timer\n'),
         unit + '-disarm.service': ('[Unit]\nDescription=Stop JPX polling on any service failure\n'
                                    '[Service]\nType=oneshot\nExecStart=/usr/bin/systemctl --user '
                                    'disable --now ' + unit + '.timer\n'),
@@ -58,15 +63,15 @@ def install():
         raise ValueError('COMMIT_MONITOR_CODE_BEFORE_ARMING')
     with monitor.locked(folder):
         for name in ('STOP.json', 'latest.json'):
-            if (folder / name).exists() and monitor.read_state(folder / name)['result_state'] in monitor.TERMINAL:
+            if monitor.present(folder / name) and monitor.read_state(folder / name)['result_state'] in monitor.TERMINAL:
                 raise ValueError('TERMINAL_MONITOR_MUST_NOT_BE_REARMED')
-        if (folder / 'armed.json').exists():
+        if monitor.present(folder / 'armed.json'):
             raise ValueError('MONITOR_ALREADY_ARMED_USE_SYSTEMCTL_STATUS')
         commit = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
         armed = dict(started_at_jst=now.isoformat(), target_session=monitor.SESSION,
                      deadline=monitor.DEADLINE.isoformat(), code_commit=commit,
                      code_hashes={p: monitor.digest(root / p) for p in (
-                         'scripts/monitor_jpx_publication.py', 'scripts/install_jpx_publication_monitor.py')})
+                         *monitor.CODE_PATHS,)})
         monitor.write_state(folder / 'armed.json', armed)
         try:
             monitor.verify_context(root, folder)

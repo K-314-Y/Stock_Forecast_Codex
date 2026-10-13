@@ -38,6 +38,8 @@ cookies.json
 data/
 logs/
 state/
+.forecast_not_run_initialized.json
+.pending-not-run-witness-*
 backups/
 exports/
 

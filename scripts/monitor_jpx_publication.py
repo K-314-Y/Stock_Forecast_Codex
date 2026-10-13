@@ -15,10 +15,17 @@ import os
 from pathlib import Path
 import re
 import ssl
+import stat
 import subprocess
-import tempfile
+import time
+import sys
 from urllib.parse import unquote, urljoin, urlsplit
 from zoneinfo import ZoneInfo
+from uuid import uuid4
+
+if __package__ in (None, ''):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts import forecast_not_run_ledger as not_run
 
 ROOT = Path(__file__).resolve().parents[1]
 JST = ZoneInfo('Asia/Tokyo')
@@ -33,6 +40,11 @@ STOP = 'JPX_PUBLICATION_MONITOR_STOP'
 PENDING = 'JPX_PUBLICATION_MONITOR_CHECK_IN_PROGRESS'
 TERMINAL = {DETECTED, EXPIRED, STOP}
 UNIT = 'jpx-publication-20261013'
+MAX_FINALIZATION_ATTEMPTS = 3
+FINALIZATION_RETRY_SECONDS = 3600
+CODE_PATHS = ('scripts/monitor_jpx_publication.py',
+              'scripts/install_jpx_publication_monitor.py',
+              'scripts/forecast_not_run_ledger.py')
 CHALLENGE = re.compile(
     r'captcha|access\s*denied|security\s*challenge|verify.{0,30}(human|browser)|'
     r'checking\s+your\s+browser|just\s+a\s+moment|cloudflare\s+ray|'
@@ -46,8 +58,22 @@ def canonical(value):
                       separators=(',', ':'), allow_nan=False).encode()
 
 
+def safe_path(root, relative):
+    path = Path(relative)
+    if path.is_absolute() or '..' in path.parts or not path.parts:
+        raise ValueError('MONITOR_REFERENCE_PATH_INVALID')
+    path = root / path
+    if any(p.is_symlink() for p in (path, *path.parents)) or not path.resolve().is_relative_to(root):
+        raise ValueError('MONITOR_REFERENCE_PATH_INVALID')
+    return path
+
+
 def digest(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    path = Path(path)
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise ValueError('MONITOR_REFERENCE_SYMLINK')
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
+        return hashlib.sha256(stream.read()).hexdigest()
 
 
 def strict_json(body):
@@ -64,40 +90,98 @@ def strict_json(body):
                       parse_constant=nonfinite)
 
 
+@contextmanager
+def _folder_fd(folder, *, create=False):
+    """Traverse every directory without following links; operations use its fd."""
+    path = Path(folder).absolute()
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for name in path.parts[1:]:
+            if name in {'.', '..'}:
+                raise ValueError('MONITOR_STATE_PATH_INVALID')
+            if create:
+                try:
+                    os.mkdir(name, mode=0o700, dir_fd=fd)
+                    os.fsync(fd)
+                except FileExistsError:
+                    pass
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def present(path):
+    # Dangling links are evidence errors, never an absent/reset state.
+    return os.path.lexists(path)
+
+
 def read_state(path):
-    envelope = strict_json(Path(path).read_bytes())
-    if hashlib.sha256(canonical(envelope['index'])).hexdigest() != envelope['sha256']:
+    path = Path(path)
+    with _folder_fd(path.parent) as folder:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder)
+        with os.fdopen(fd, 'rb') as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size > 4 * 1024 * 1024:
+                raise ValueError('MONITOR_STATE_FILE_INVALID')
+            body = stream.read(4 * 1024 * 1024 + 1)
+            after = os.fstat(stream.fileno())
+        current = os.stat(path.name, dir_fd=folder, follow_symlinks=False)
+        identity = lambda info: (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                                 info.st_mtime_ns, info.st_ctime_ns)
+        if identity(before) != identity(after) or identity(before) != identity(current):
+            raise ValueError('MONITOR_STATE_CONCURRENT_CHANGE')
+    envelope = strict_json(body)
+    if (not isinstance(envelope, dict) or set(envelope) != {'index', 'sha256'}
+            or hashlib.sha256(canonical(envelope['index'])).hexdigest() != envelope['sha256']):
         raise ValueError('MONITOR_STATE_HASH_CONFLICT')
     return envelope['index']
 
 
 def write_state(path, value):
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = canonical({'index': value, 'sha256': hashlib.sha256(canonical(value)).hexdigest()})
-    fd, pending = tempfile.mkstemp(prefix='.monitor-', dir=path.parent)
-    try:
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(pending, path)
-        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    with _folder_fd(path.parent, create=True) as folder:
+        pending = '.monitor-' + uuid4().hex
+        fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     mode=0o600, dir_fd=folder)
         try:
-            os.fsync(fd)
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                info = os.stat(path.name, dir_fd=folder, follow_symlinks=False)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise ValueError('MONITOR_STATE_PATH_INVALID')
+            except FileNotFoundError:
+                pass
+            os.replace(pending, path.name, src_dir_fd=folder, dst_dir_fd=folder)
+            os.fsync(folder)
         finally:
-            os.close(fd)
-    finally:
-        if os.path.exists(pending):
-            os.unlink(pending)
+            if pending in os.listdir(folder):
+                os.unlink(pending, dir_fd=folder)
+                os.fsync(folder)
 
 
 @contextmanager
 def locked(folder):
-    folder.mkdir(parents=True, exist_ok=True)
-    with (folder / '.lock').open('a+b') as stream:
-        fcntl.flock(stream, fcntl.LOCK_EX)
-        yield
+    with _folder_fd(folder, create=True) as directory:
+        fd = os.open('.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     mode=0o600, dir_fd=directory)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError('MONITOR_LOCK_INVALID')
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            current = os.stat('.lock', dir_fd=directory, follow_symlinks=False)
+            if (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino):
+                raise ValueError('MONITOR_LOCK_REPLACED')
+            yield
+        finally:
+            os.close(fd)
 
 
 def official_url(value, *, json_only=False):
@@ -116,29 +200,34 @@ def verify_context(root, folder):
     if context['target_session'] != SESSION or datetime.fromisoformat(context['deadline']) != DEADLINE:
         raise ValueError('MONITOR_TARGET_CONTEXT_CONFLICT')
     for relative, expected in context['protected_references'].items():
-        path = (root / relative).resolve()
-        if not path.is_relative_to(root) or digest(path) != expected:
+        path = safe_path(root, relative)
+        if digest(path) != expected:
             raise ValueError('MONITOR_PROTECTED_CONTEXT_CHANGED:' + relative)
     rules = strict_json((root / 'config/forward_trial_execution_policy.json').read_bytes())
-    calendar_path = root / rules['calendar']
+    calendar_path = safe_path(root, rules['calendar'])
     if digest(calendar_path) != rules['calendar_sha256']:
         raise ValueError('VALIDATED_CALENDAR_HASH_MISMATCH')
     days = strict_json(calendar_path.read_bytes())['jp_sessions']
     if days != sorted(set(days)) or SESSION not in days or TARGET not in days:
         raise ValueError('MONITOR_CALENDAR_CONFLICT')
-    if days[days.index(SESSION) + 1] != TARGET or SESSION not in rules['permanently_not_run_sessions']:
+    if days[days.index(SESSION) + 1] != TARGET or SESSION not in not_run.sessions(root, rules):
         raise ValueError('MONITOR_TARGET_POLICY_CONFLICT')
     branch = subprocess.check_output(['git', '-C', str(root), 'branch', '--show-current'], text=True).strip()
     if branch != BRANCH:
         raise ValueError('MONITOR_BRANCH_CONFLICT')
     armed = read_state(folder / 'armed.json')
-    head = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
-    if head != armed['code_commit']:
-        raise ValueError('MONITOR_COMMIT_CHANGED')
+    if (armed.get('target_session') != SESSION
+            or datetime.fromisoformat(armed['deadline']) != DEADLINE
+            or not re.fullmatch(r'[0-9a-f]{40}', armed['code_commit'])
+            or not set(CODE_PATHS).issubset(armed['code_hashes'])):
+        raise ValueError('MONITOR_ARMED_IDENTITY_INVALID')
     for relative, expected in armed['code_hashes'].items():
-        if digest(root / relative) != expected:
+        if digest(safe_path(root, relative)) != expected:
             raise ValueError('MONITOR_CODE_CHANGED')
-    source = strict_json((root / context['discovery_reference']).read_bytes())
+    if (context['discovery_reference'] not in context['protected_references']
+            or 'config/forward_trial_execution_policy.json' not in context['protected_references']):
+        raise ValueError('MONITOR_REQUIRED_PROTECTION_MISSING')
+    source = strict_json(safe_path(root, context['discovery_reference']).read_bytes())
     if (source['session'] != SESSION or source['pdf_requests'] != 0
             or source['schema_version'] != 'jpx-json-discovery-v1'
             or source['monthly_json_reference_url'] != context['monthly_url']):
@@ -215,7 +304,7 @@ def completed_history_in_time(root, deadline):
     usable history. Without this independently completed evidence fail closed.
     """
     path = root / 'state/jpx_publication_monitor' / SESSION / 'task10c6c_completion.json'
-    if not path.exists():
+    if not present(path):
         return False
     try:
         return _completed_history_receipt(root, deadline, read_state(path))
@@ -248,60 +337,138 @@ def _completed_history_receipt(root, deadline, receipt):
     return True
 
 
-def record_not_run(root):
-    """Append only the missed target to the existing permanent exclusion policy.
-
-    No Forecast runtime, persistence contract, or model settings change. The
-    caller holds the monitor lock; compare bytes to detect concurrent edits.
-    """
-    path = root / 'config/forward_trial_execution_policy.json'
-    before = path.read_bytes()
-    rules = strict_json(before)
-    sessions = rules['permanently_not_run_sessions']
-    if SESSION not in sessions:
+def record_not_run(root, recorded_at):
+    rules = strict_json((root / 'config/forward_trial_execution_policy.json').read_bytes())
+    if SESSION not in not_run.static_sessions(rules):
         raise ValueError('PERMANENT_NOT_RUN_POLICY_CONFLICT')
-    if TARGET in sessions:
-        return
-    rules['permanently_not_run_sessions'] = sorted(set(sessions + [TARGET]))
-    fd, pending = tempfile.mkstemp(prefix='.monitor-policy-', dir=path.parent)
-    try:
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(json.dumps(rules, ensure_ascii=False, indent=2).encode() + b'\n')
-            stream.flush()
-            os.fsync(stream.fileno())
-        if path.read_bytes() != before:
-            raise ValueError('CONCURRENT_POLICY_CHANGE')
-        os.replace(pending, path)
-        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-    finally:
-        if os.path.exists(pending):
-            os.unlink(pending)
+    # Already tracked exclusions remain authoritative; never rewrite old policy.
+    not_run.record(root, TARGET, reason='FORECAST_DEADLINE_EXPIRED_WITHOUT_VALIDATED_HISTORY',
+                   source='JPX_PUBLICATION_MONITOR:' + SESSION, recorded_at=recorded_at)
+
+
+def _retry_state(folder):
+    path = folder / 'deadline_retry.json'
+    witness = folder / 'deadline_reserved.json'
+    if present(witness) and read_state(witness) != dict(target_session=TARGET,deadline=DEADLINE.isoformat()):
+        raise ValueError('DEADLINE_RETRY_WITNESS_INVALID')
+    if not present(path):
+        if present(witness):
+            raise ValueError('DEADLINE_RETRY_LEDGER_MISSING')
+        for name in ('STOP.json', 'latest.json'):
+            if present(folder / name):
+                old = read_state(folder / name)
+                if 'finalization_attempts' in old:
+                    raise ValueError('DEADLINE_RETRY_LEDGER_MISSING')
+        return dict(target_session=TARGET, deadline=DEADLINE.isoformat(), attempts=0,
+                    last_attempt_at=None, stopped=False, completion=None)
+    state = read_state(path)
+    if not present(witness):
+        raise ValueError('DEADLINE_RETRY_WITNESS_MISSING')
+    if (set(state) not in ({'target_session', 'deadline', 'attempts', 'last_attempt_at', 'stopped'},
+                          {'target_session', 'deadline', 'attempts', 'last_attempt_at', 'stopped', 'completion'})
+            or state['target_session'] != TARGET or state['deadline'] != DEADLINE.isoformat()
+            or type(state['attempts']) is not int or not 1 <= state['attempts'] <= MAX_FINALIZATION_ATTEMPTS
+            or type(state['stopped']) is not bool
+            or datetime.fromisoformat(state['last_attempt_at']).tzinfo is None):
+        raise ValueError('DEADLINE_RETRY_LEDGER_INVALID')
+    completion = state.setdefault('completion', None)
+    if completion is not None and (not state['stopped'] or not isinstance(completion, dict)
+            or completion.get('target_session') != SESSION or completion.get('deadline_expired') is not True
+            or completion.get('result_state') not in TERMINAL
+            or completion.get('finalization_attempts') != state['attempts']
+            or completion.get('checked_at_jst') != state['last_attempt_at']):
+        raise ValueError('DEADLINE_RETRY_COMPLETION_INVALID')
+    return state
 
 
 def finalize_deadline(root, folder, result, history_check):
     result['deadline_expired'] = True
     try:
+        retry = _retry_state(folder)
+        now = datetime.fromisoformat(result['checked_at_jst'])
+        if retry['last_attempt_at'] and now < datetime.fromisoformat(retry['last_attempt_at']):
+            raise ValueError('DEADLINE_FINALIZATION_CLOCK_ROLLBACK')
+        if retry['completion'] is not None:
+            result = retry['completion']  # Recover interrupted latest/STOP publication.
+            write_state(folder / 'latest.json', result)
+            if result['result_state'] == STOP or present(folder / 'STOP.json'):
+                write_state(folder / 'STOP.json', result)
+            return result
+        if retry['stopped'] or retry['attempts'] >= MAX_FINALIZATION_ATTEMPTS:
+            raise ValueError('DEADLINE_FINALIZATION_RETRY_EXHAUSTED')
+        if retry['last_attempt_at'] and now < (datetime.fromisoformat(retry['last_attempt_at'])
+                                               + timedelta(seconds=FINALIZATION_RETRY_SECONDS)):
+            result.update(result_state=STOP, deadline_expired=False, finalization_exhausted=False,
+                          finalization_attempts=retry['attempts'],
+                          stop_reason='DEADLINE_FINALIZATION_RETRY_NOT_YET_DUE')
+            write_state(folder / 'latest.json', result)
+            write_state(folder / 'STOP.json', result)
+            return result
+        retry.update(attempts=retry['attempts'] + 1, last_attempt_at=now.isoformat())
+        # Count before any work: a crash consumes an attempt rather than resetting it.
+        if not present(folder / 'deadline_reserved.json'):
+            write_state(folder / 'deadline_reserved.json',dict(target_session=TARGET,deadline=DEADLINE.isoformat()))
+        write_state(folder / 'deadline_retry.json', retry)
+        result['finalization_attempts'] = retry['attempts']
         if not history_check(root, DEADLINE):
-            record_not_run(root)
+            record_not_run(root, result['checked_at_jst'])
             result.update(result_state=EXPIRED, stop_reason=TARGET + '_FORECAST_PERMANENTLY_NOT_RUN')
         else:
             result.update(result_state=DETECTED, publication_found=True,
                           stop_reason='DEADLINE_REACHED_HISTORY_COMPLETED_NO_FORECAST')
+        retry['stopped'] = True
+        retry['completion'] = dict(result)
+        write_state(folder / 'deadline_retry.json', retry)
     except (ValueError, OSError, KeyError, TypeError) as error:
-        result.update(result_state=STOP, stop_reason='DEADLINE_FINALIZATION_FAILED:' + type(error).__name__)
-        result['deadline_expired'] = False  # Retry bookkeeping only, never HTTP.
+        result.update(result_state=STOP, stop_reason='DEADLINE_FINALIZATION_FAILED:' + str(error))
+        # Only failures with a valid reservation have any retries left.
+        try:
+            retry = _retry_state(folder)
+            exhausted = (retry['stopped'] or retry['attempts'] >= MAX_FINALIZATION_ATTEMPTS
+                         or (retry['last_attempt_at'] and
+                             datetime.fromisoformat(result['checked_at_jst']) <
+                             datetime.fromisoformat(retry['last_attempt_at'])))
+            retry['stopped'] = bool(exhausted)
+            write_state(folder / 'deadline_retry.json', retry)
+            result['finalization_attempts'] = retry['attempts']
+        except (ValueError, OSError, KeyError, TypeError):
+            exhausted = True
+        result.update(deadline_expired=bool(exhausted), finalization_exhausted=bool(exhausted))
     write_state(folder / 'latest.json', result)
-    if (folder / 'STOP.json').exists():
+    if result['result_state'] == STOP or present(folder / 'STOP.json'):
         write_state(folder / 'STOP.json', result)
     return result
 
 
+def stop_finalization(root=ROOT, *, now=None):
+    """Service failure endpoint: latch durable STOP; no context or network calls."""
+    now = now or datetime.now(JST)
+    if now.tzinfo is None:
+        raise ValueError('TIMEZONE_REQUIRED')
+    folder = Path(root) / 'state/jpx_publication_monitor' / SESSION
+    result = dict(checked_at_jst=now.isoformat(), target_session=SESSION,
+                  source_identity=None, http_status=None, result_state=STOP,
+                  publication_found=False, deadline_expired=True, code_commit=None,
+                  finalization_exhausted=True, stop_reason='DEADLINE_SERVICE_FAILED_REVIEW_REQUIRED')
+    with locked(folder):
+        write_state(folder / 'STOP.json', result)
+        write_state(folder / 'latest.json', result)
+    return result
+
+
+def run_deadline_finalization(root=ROOT, *, sleep=time.sleep):
+    """One process, at most three attempts, persisted across process restarts."""
+    for attempt in range(MAX_FINALIZATION_ATTEMPTS):
+        result = check_once(root, finalize_only=True)
+        if result['deadline_expired']:
+            return result
+        if attempt + 1 < MAX_FINALIZATION_ATTEMPTS:
+            sleep(FINALIZATION_RETRY_SECONDS)
+    return stop_finalization(root)
+
+
 def check_once(root=ROOT, *, now=None, fetch=get_monthly, context_check=verify_context,
-               history_check=completed_history_in_time):
+               history_check=completed_history_in_time, finalize_only=False):
     root = Path(root).resolve()
     live_clock = now is None
     now = now or datetime.now(JST)
@@ -312,9 +479,9 @@ def check_once(root=ROOT, *, now=None, fetch=get_monthly, context_check=verify_c
     with locked(folder):
         old = None
         try:
-            if (folder / 'STOP.json').exists():
+            if present(folder / 'STOP.json'):
                 old = read_state(folder / 'STOP.json')
-            elif (folder / 'latest.json').exists():
+            elif present(folder / 'latest.json'):
                 old = read_state(folder / 'latest.json')
             if old is not None and (old['target_session'] != SESSION or old['result_state'] not in TERMINAL | {ABSENT, PENDING}):
                 raise ValueError('MONITOR_STATE_CONTEXT_CONFLICT')
@@ -329,9 +496,23 @@ def check_once(root=ROOT, *, now=None, fetch=get_monthly, context_check=verify_c
                       result_state=ABSENT, publication_found=(old or {}).get('publication_found', False),
                       deadline_expired=now >= DEADLINE, stop_reason=None,
                       code_commit=(old or {}).get('code_commit'))
+        if finalize_only and now < DEADLINE:
+            result.update(result_state=STOP, deadline_expired=True, finalization_exhausted=True,
+                          stop_reason='DEADLINE_FINALIZATION_CLOCK_ROLLBACK')
+            write_state(folder / 'STOP.json', result)
+            write_state(folder / 'latest.json', result)
+            return result
         if now >= DEADLINE:
             if old and old.get('deadline_expired') and old['result_state'] in TERMINAL:
-                return old
+                if not present(folder / 'deadline_retry.json'):
+                    return old  # Original terminal evidence remains readable.
+                try:
+                    retry = _retry_state(folder)
+                    if retry['completion'] == old or (retry['stopped'] and
+                            retry['completion'] is None and old.get('finalization_exhausted')):
+                        return old
+                except (ValueError, OSError, KeyError, TypeError):
+                    pass  # The finalizer durably closes a corrupt retry ledger.
             return finalize_deadline(root, folder, result, history_check)
         if old and old['result_state'] in TERMINAL:
             return old
@@ -350,7 +531,8 @@ def check_once(root=ROOT, *, now=None, fetch=get_monthly, context_check=verify_c
                     return old  # Repeated manual/scheduled calls cannot increase cadence.
             result['result_state'] = PENDING
             write_state(folder / 'latest.json', result)  # Durable reservation before GET.
-            if live_clock and datetime.now(JST) >= DEADLINE:
+            if live_clock and (finalized_at := datetime.now(JST)) >= DEADLINE:
+                result['checked_at_jst'] = finalized_at.isoformat()
                 return finalize_deadline(root, folder, result, history_check)
             status, headers, body = fetch(url)
             result['http_status'] = status
@@ -366,7 +548,8 @@ def check_once(root=ROOT, *, now=None, fetch=get_monthly, context_check=verify_c
         if result['result_state'] == STOP:
             write_state(folder / 'STOP.json', result)
         # A GET started before cutoff may finish late; it never grants readiness.
-        if live_clock and datetime.now(JST) >= DEADLINE:
+        if live_clock and (finalized_at := datetime.now(JST)) >= DEADLINE:
+            result['checked_at_jst'] = finalized_at.isoformat()
             return finalize_deadline(root, folder, result, history_check)
         return result
 
@@ -392,19 +575,19 @@ def main():
     parser.add_argument('--deadline', required=True)
     parser.add_argument('--once', action='store_true', required=True)
     parser.add_argument('--scheduled', action='store_true')
-    parser.add_argument('--finalize', action='store_true', help='Deadline bookkeeping only; no network')
+    parser.add_argument('--finalize', action='store_true', help='Bounded deadline bookkeeping only; no network')
+    parser.add_argument('--finalization-failed', action='store_true', help='Latch failed deadline service STOP; no network')
     args = parser.parse_args()
     if datetime.fromisoformat(args.deadline) != DEADLINE:
         parser.error('Only the approved aware deadline is accepted')
     if args.finalize and datetime.now(JST) < DEADLINE:
         parser.error('Deadline finalization cannot run before cutoff')
-    result = check_once()
+    result = (stop_finalization() if args.finalization_failed else
+              run_deadline_finalization() if args.finalize else check_once())
     # A request that crosses the cutoff cannot count as publication in time.
-    if not args.finalize and datetime.now(JST) >= DEADLINE and not result['deadline_expired']:
+    if not args.finalize and not args.finalization_failed and datetime.now(JST) >= DEADLINE and not result['deadline_expired']:
         result = check_once()
     print(json.dumps(result, ensure_ascii=False))
-    if args.finalize and not result['deadline_expired']:
-        raise RuntimeError('DEADLINE_BOOKKEEPING_REQUIRES_RETRY_NO_HTTP')
     if args.scheduled and result['result_state'] in TERMINAL:
         disable_timers(all_timers=result['deadline_expired'])
         if result['result_state'] == DETECTED and not result['deadline_expired']:

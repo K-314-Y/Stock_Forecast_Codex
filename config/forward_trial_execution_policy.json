@@ -45,6 +45,7 @@
   "task10b_target_session": "2026-10-13",
   "task10b_previous_session": "2026-10-09",
   "target_policy": "NEXT_VALIDATED_JPX_SESSION",
+  "deadline_expired_forecast_backfill": "FORBIDDEN",
   "permanently_not_run_sessions": [
     "2026-10-13"
   ],

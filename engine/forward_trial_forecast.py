@@ -69,7 +69,7 @@ def _read_bundle(destination):
         raise ValueError('FREEZE_RECEIPT_INVALID')
     target = receipt['target_session']
     ledger.validate_bundle_id(receipt['forecast_bundle_id'], target)
-    if target in policy.load_policy()['permanently_not_run_sessions']:
+    if target in policy.not_run_sessions():
         raise ValueError('PERMANENTLY_NOT_RUN_SESSION')
     pre = core.read_frozen(destination / 'prospective.json')
     ledger.validate_pre_session(pre)

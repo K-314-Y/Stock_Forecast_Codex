@@ -79,8 +79,8 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(result['result_state'], m.EXPIRED)
         self.assertTrue(result['deadline_expired'])
         self.assertEqual(self.calls, [])
-        expected = dict(self.policy, permanently_not_run_sessions=[m.SESSION, m.TARGET])
-        self.assertEqual(json.loads((self.root / 'config/forward_trial_execution_policy.json').read_bytes()), expected)
+        self.assertEqual(json.loads((self.root / 'config/forward_trial_execution_policy.json').read_bytes()), self.policy)
+        self.assertEqual(m.not_run.sessions(self.root, self.policy), {m.SESSION, m.TARGET})
 
     def test_after_cutoff_zero_network(self):
         self.assertEqual(self.run_check(now=m.DEADLINE + timedelta(seconds=1))['result_state'], m.EXPIRED)
@@ -260,6 +260,8 @@ assert not (root/'data').exists()
             result = m.check_once(self.root, context_check=lambda *_: (URL, 'a'*40),
                                   fetch=lambda *_: self.fail('No GET at cutoff'))
         self.assertEqual(result['result_state'], m.EXPIRED)
+        entry = m.not_run.strict_json((self.root / 'state/forecast_not_run_sessions' / (m.TARGET+'.json')).read_bytes())
+        self.assertEqual(entry['record']['recorded_at'],m.DEADLINE.isoformat())
 
     def test_response_completes_at_cutoff_no_readiness(self):
         before = m.DEADLINE - timedelta(seconds=1)
@@ -272,6 +274,8 @@ assert not (root/'data').exists()
             result = m.check_once(self.root, context_check=lambda *_: (URL, 'a'*40),
                 fetch=lambda *_: response([{'TradeDate':'20261013','Stocks':'/exact.pdf'}]))
         self.assertEqual(result['result_state'], m.EXPIRED)
+        entry = m.not_run.strict_json((self.root / 'state/forecast_not_run_sessions' / (m.TARGET+'.json')).read_bytes())
+        self.assertEqual(entry['record']['recorded_at'],m.DEADLINE.isoformat())
 
     def test_terminal_cli_disables_poll_and_retains_only_deadline_guard(self):
         for state, expired in [(m.DETECTED, False), (m.STOP, False), (m.EXPIRED, True)]:
@@ -296,7 +300,13 @@ assert not (root/'data').exists()
                  'discovery_reference':'discovery.json','protected_references':{
                      'discovery.json':m.digest(source),'config/forward_trial_execution_policy.json':m.digest(policy_path)}}
         m.write_state(self.folder/'context.json',context)
-        m.write_state(self.folder/'armed.json',{'code_commit':'a'*40,'code_hashes':{}})
+        for relative in m.CODE_PATHS:
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('# synthetic monitor code\n')
+        m.write_state(self.folder/'armed.json',{'code_commit':'a'*40,'target_session':m.SESSION,
+            'deadline':m.DEADLINE.isoformat(),
+            'code_hashes':{relative:m.digest(self.root / relative) for relative in m.CODE_PATHS}})
         def git(command, **kwargs):
             return m.BRANCH+'\n' if command[-1]=='--show-current' else 'a'*40+'\n'
         with patch.object(m.subprocess,'check_output',side_effect=git):

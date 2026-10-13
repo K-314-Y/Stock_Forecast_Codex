@@ -3,13 +3,18 @@ import json
 from datetime import date
 
 from engine import minimal_trial as core
+from scripts import forecast_not_run_ledger as not_run
 
 SCOPE = 'LOCAL_PERSONAL_NONCOMMERCIAL_FORWARD_TRIAL'
 TERMS = 'CONDITIONAL_PERSONAL_NONCOMMERCIAL'
 
 
 def load_policy():
-    return json.loads((core.ROOT / 'config/forward_trial_execution_policy.json').read_bytes())
+    return not_run.strict_json((core.ROOT / 'config/forward_trial_execution_policy.json').read_bytes())
+
+
+def not_run_sessions():
+    return not_run.sessions(core.ROOT, load_policy())
 
 
 def validated_calendar():
@@ -31,7 +36,7 @@ def next_target_session(now=None):
     now = fresh._receipt_now() if now is None else now
     if now.tzinfo is None:
         raise ValueError('TIMEZONE_REQUIRED')
-    prohibited = load_policy()['permanently_not_run_sessions']
+    prohibited = not_run_sessions()
     for day in validated_calendar()['jp_sessions']:
         if day not in prohibited and now < fresh._receipt_time(day + 'T08:45:00+09:00'):
             return day
