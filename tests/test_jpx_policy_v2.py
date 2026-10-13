@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from pypdf import PdfWriter
 from engine import minimal_trial as core
-from engine import one_session_dry_run as frozen
+from engine import forward_artifacts as frozen
 from providers.jp.jpx_manual import historical_direct as d
 from providers.jp.jpx_manual import historical_policy_v2 as policy
 

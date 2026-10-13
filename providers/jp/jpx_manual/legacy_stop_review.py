@@ -7,11 +7,11 @@ from datetime import datetime
 import hashlib
 from pathlib import Path
 import re
-import subprocess
 
 from engine import minimal_trial as core
-from engine import one_session_dry_run as frozen
+from engine import forward_artifacts as frozen
 from . import historical_policy_v2 as policy
+from . import acquisition_binding as binding
 
 SCHEMA = 'legacy-hard-stop-reviewed-release-v1'
 POLICY = 'STOP_RETRY_RESUME_V2_REVIEWED_LEGACY_V1'
@@ -159,20 +159,18 @@ def _fixes(root, fixes, *, current):
 
 
 def _git(root, *arguments):
-    result = subprocess.run(['git', '-C', str(root), *arguments], capture_output=True)
-    if result.returncode:
-        raise ValueError('LEGACY_RENEWAL_CODE_COMMIT_INVALID')
-    return result.stdout
+    return binding.git(root, *arguments)
 
 
-def _code_binding(root, receipt):
-    """Renewal requires actual clean commits, without invented identities."""
+def _code_binding(root, receipt, *, authoring=False):
+    """Commits authenticate audit lineage; component fingerprints gate execution."""
     base, current = receipt['base_code_commit'], receipt['current_code_commit']
     if (not re.fullmatch(r'[0-9a-f]{40}', base)
             or not re.fullmatch(r'[0-9a-f]{40}', current)
-            or _git(root, 'rev-parse', '--show-toplevel').decode().strip() != str(root)
-            or _git(root, 'rev-parse', 'HEAD').decode().strip() != current
-            or _git(root, 'status', '--porcelain=v1')):
+            or _git(root, 'rev-parse', '--show-toplevel').decode().strip() != str(root)):
+        raise ValueError('LEGACY_RENEWAL_CODE_COMMIT_INVALID')
+    if authoring and (_git(root, 'rev-parse', 'HEAD').decode().strip() != current
+                      or _git(root, 'status', '--porcelain=v1')):
         raise ValueError('LEGACY_RENEWAL_CLEAN_CURRENT_COMMIT_REQUIRED')
     _git(root, 'merge-base', '--is-ancestor', base, current)
     for commit, fixes in ((base, receipt['previous_fix_refs']), (current, receipt['fix_refs'])):
@@ -222,9 +220,11 @@ def _validate(stops, receipt, *, current=True, previous=None, previous_reference
     if renewal and timestamp < datetime.fromisoformat(previous.get('renewed_at', previous.get('released_at'))):
         raise ValueError('LEGACY_RENEWAL_TIME_LINEAGE_INVALID')
     fixes = receipt['fix_refs']
-    _fixes(root, fixes, current=current)
-    if renewal and current:
+    _fixes(root, fixes, current=False)
+    if renewal:
         _code_binding(root, receipt)
+    if current:
+        binding.validate(root, receipt)
     replay = replay_discovery(root, receipt['review_evidence'], receipt['discovery_inputs'], old['session'])
     if receipt.get('discovery_validation') != replay:
         raise ValueError('LEGACY_REVIEW_REPLAY_CONFLICT')
@@ -339,6 +339,9 @@ def manual_review_release(root, *, expected_stop_sha256, review_decision, root_c
         ref, old = _eligible(stops, expected_stop_sha256)
         if ref in verified_releases(stops):
             raise FileExistsError('LEGACY_STOP_ALREADY_REVIEWED')
+        # Initial authoring must bind supplied PASS reports to current fix bytes.
+        # Historical execution validates their audit identity instead.
+        _fixes(root, fix_refs, current=True)
         receipt = dict(schema_version=SCHEMA, policy_version=POLICY, state='REVIEWED_RELEASE',
                        release_type='LEGACY_HARD_STOP_MANUAL_REVIEW', previous_stop_reference=ref,
                        legacy_stop_sha256=expected_stop_sha256, previous_stop_contents=old,
@@ -347,7 +350,8 @@ def manual_review_release(root, *, expected_stop_sha256, review_decision, root_c
                        review_evidence=review_evidence, discovery_inputs=discovery_inputs,
                        fix_refs=fix_refs, validation_refs=validation_refs, review_decision=review_decision,
                        review_action='EXPLICIT_MANUAL_FUNCTION', released_at=policy.stamp(),
-                       discovery_validation=replay_discovery(root, review_evidence, discovery_inputs, old['session']))
+                       discovery_validation=replay_discovery(root, review_evidence, discovery_inputs, old['session']),
+                       component_fingerprint=binding.fingerprint(binding.components(root, infrastructure=True)))
         _validate(stops, receipt)
         folder = store / FOLDER
         folder.mkdir(exist_ok=True)
@@ -403,7 +407,9 @@ def manual_review_renewal(root, *, expected_stop_sha256, expected_previous_relea
             discovery_inputs=previous['discovery_inputs'], discovery_validation=previous['discovery_validation'],
             review_decision=review_decision, review_action='EXPLICIT_MANUAL_FUNCTION',
             base_code_commit=base_code_commit, current_code_commit=current_code_commit,
-            renewed_at=policy.stamp())
+            renewed_at=policy.stamp(),
+            component_fingerprint=binding.fingerprint(binding.components(root, infrastructure=True)))
+        _code_binding(root, receipt, authoring=True)
         _validate(stops, receipt, previous=previous, previous_reference=previous_ref)
         folder = store / FOLDER
         path = folder / ('reviewed-release-' + expected_stop_sha256

@@ -9,7 +9,7 @@ from pathlib import Path
 from engine import historical_admission as admission
 from engine import historical_quality as quality
 from engine import minimal_trial as core
-from engine import one_session_dry_run as storage
+from engine import forward_artifacts as storage
 from engine.parallel_data import PRICE9, digest, hash_valid, rules, stamp
 
 POLICY = core.ROOT / 'config/parallel_training_dataset_v1.json'

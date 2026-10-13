@@ -3,7 +3,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 from engine import minimal_trial as core
-from engine import one_session_dry_run as storage
+from engine import forward_artifacts as storage
 from engine.parallel_data import (CLASSES, PRIMARY, LOGISTIC, LIGHTGBM, MODEL_ROLES,
                                   digest, rules, stamp, validate_snapshot, probability_valid)
 from engine.parallel_data import specification_hash, common_from_execution

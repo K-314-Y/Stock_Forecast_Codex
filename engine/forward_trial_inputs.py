@@ -11,7 +11,7 @@ from engine import execution_policy as policy
 from engine import fresh_bridge as fresh
 from engine import historical_close_bridge as historical
 from engine import minimal_trial as core
-from engine import one_session_dry_run as artifacts
+from engine import forward_artifacts as artifacts
 from engine import partial_ticker as partial
 from engine import forward_storage as storage
 
@@ -123,12 +123,15 @@ def load_execution_history(calendar, thresholds, started, previous):
                 raise ValueError('VALIDATED_HISTORICAL_EXTENSION_MISSING:' + day)
             evidence = dict(source_role='FORECAST_FEATURE', source_kind='HISTORICAL_CLOSE_BRIDGE',
                             path=str(path), sha256=core.sha256(path), session_end=day)
+            closes, refs = historical.verify_day(evidence, started, cutoff, previous)
+            if set(closes) != set(core.CORE):
+                raise ValueError('HISTORICAL_EXTENSION_GRAIN_INVALID')
             for ticker in core.CORE:
-                rows, refs = historical.verify(evidence, ticker, started, cutoff, previous)
-                if len(rows) != 1 or rows[0][0] != day:
+                session, close = closes[ticker]
+                if session != day:
                     raise ValueError('HISTORICAL_EXTENSION_GRAIN_INVALID')
-                stocks[ticker].append(dict(session_date=day, close=rows[0][1]))
-                hashes.update(refs)
+                stocks[ticker].append(dict(session_date=day, close=close))
+            hashes.update(refs)
     return stocks, hashes
 
 

@@ -21,24 +21,22 @@ Artifacts are create-only, hash-sealed directory commits. A store binds exactly
 one session. Uncommitted .pending-* directories are ignored after interruption.
 Use a dedicated store (e.g. data/pipeline_probe/YYYY-MM-DD), never a history log.
 """
-from contextlib import contextmanager
 from datetime import datetime, time
 import argparse
 import copy
-import fcntl
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
-import shutil
-import tempfile
 import uuid
 from zoneinfo import ZoneInfo
 
 from jsonschema import Draft202012Validator, FormatChecker
 from engine import fresh_bridge as bridge
 from engine import minimal_trial as core
+from engine.forward_artifacts import (_stamp, _sync_dir, _locked, _seal, _commit,
+                                      _load, _unchanged, _validated_jpx)
 
 JST = ZoneInfo('Asia/Tokyo')
 MODEL_ID = 'BASE_RATE_PIPELINE_PROBE'
@@ -50,13 +48,6 @@ def _now():
     return datetime.now(JST)
 
 
-def _stamp(value):
-    stamp = datetime.fromisoformat(value)
-    if stamp.tzinfo is None:
-        raise ValueError('NAIVE_PROBE_TIME')
-    return stamp.astimezone(JST)
-
-
 def _digest(value):
     return hashlib.sha256(core.canonical_bytes(value)).hexdigest()
 
@@ -64,58 +55,6 @@ def _digest(value):
 def _identity(record):
     return {k: record[k] for k in ('target_session', 'ticker', 'model_id',
                                    'model_version', 'forecast_cutoff')}
-
-
-def _sync_dir(path):
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-@contextmanager
-def _locked(store):
-    store = Path(store)
-    store.mkdir(parents=True, exist_ok=True)
-    with (store / '.lock').open('a+b') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            yield store
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
-
-
-def _seal(path, record):
-    payload = core.canonical_bytes(record)
-    with path.open('xb') as stream:
-        stream.write(payload)
-        stream.flush()
-        os.fsync(stream.fileno())
-    with path.with_suffix('.sha256').open('x', encoding='ascii') as stream:
-        stream.write(hashlib.sha256(payload).hexdigest() + '\n')
-        stream.flush()
-        os.fsync(stream.fileno())
-
-
-def _commit(destination, builder, confirm=None):
-    if destination.exists():
-        raise FileExistsError('PROBE_CREATE_ONLY:' + str(destination))
-    stage = Path(tempfile.mkdtemp(prefix='.pending-', dir=destination.parent))
-    try:
-        builder(stage)
-        # Existing writers' sidecars are also durable before the directory commit.
-        for file in stage.iterdir():
-            with file.open('rb') as stream:
-                os.fsync(stream.fileno())
-        if confirm is not None:
-            confirm(stage)
-        _sync_dir(stage)
-        os.rename(stage, destination)
-        _sync_dir(destination.parent)
-    finally:
-        if stage.exists():
-            shutil.rmtree(stage)
 
 
 def _commit_record(destination, record):
@@ -183,18 +122,6 @@ def _evidence(stocks, previous, created, cutoff):
             raise ValueError('STALE_PROBE_PRICE_EVIDENCE')
         prices[symbol] = [{'session_date': day, 'close': close} for day, close in sorted(closes.items())]
     return hashes, prices
-
-
-def _load(path, hashes):
-    path = Path(path).resolve()
-    payload = path.read_bytes()
-    hashes[str(path)] = hashlib.sha256(payload).hexdigest()
-    return json.loads(payload)
-
-
-def _unchanged(hashes):
-    if any(core.sha256(path) != expected for path, expected in hashes.items()):
-        raise ValueError('INPUT_CHANGED_BEFORE_FREEZE')
 
 
 def forecast_phase(store, target_session, ticker, inputs_path, forecast_id=None):
@@ -377,60 +304,6 @@ def _lifecycle(store, key):
             raise ValueError('SCORE_LINK_HASH_MISMATCH')
         state = 'SCORED'
     return state
-
-
-def _validated_jpx(parsed_path, target_session, now):
-    parsed_hash = core.sha256(parsed_path)
-    parsed = core.load_parsed_jpx(parsed_path)  # Includes the existing Linux raw resolver.
-    manifest_path = core.ROOT / 'data/outcome_input/manual_jpx/retention_manifest.json'
-    manifest_bytes = manifest_path.read_bytes()
-    manifest = json.loads(manifest_bytes)
-    entries = [entry for entry in manifest['entries']
-               if entry.get('session_date') == target_session
-               and entry.get('sha256') == parsed['source_file_hash']
-               and entry.get('normalized_output_sha256') == parsed_hash]
-    if (len(entries) != 1 or entries[0].get('parser_status') != 'PASS'
-            or entries[0].get('schema_validation') != 'PASS'
-            or entries[0].get('core6_count') != 6
-            or parsed.get('source_file_hash_after') != parsed['source_file_hash']
-            or parsed.get('manual_file_integrity') != 'PASS'
-            or parsed.get('duplicate_count') != 0
-            or parsed.get('session_date') != target_session
-            or parsed.get('normalized_schema_validation') != 'PASS'
-            or parsed.get('core6_extraction') != '6/6'):
-        raise ValueError('JPX_MANIFEST_OR_VALIDATION_MISMATCH')
-    close = _stamp(target_session + 'T15:30:00+09:00')
-    if not close <= _stamp(parsed['retrieved_at']) <= now or _stamp(entries[0]['parsed_at']) > now:
-        raise ValueError('JPX_OUTCOME_AVAILABILITY_INVALID')
-    records = parsed['records']
-    if len(records) != 6 or {r['ticker'] for r in records} != set(core.CORE):
-        raise ValueError('JPX_CORE6_MISMATCH')
-    schema = json.loads((core.ROOT / 'config/normalized_market_schema.json').read_text(encoding='utf-8-sig'))
-    validator = Draft202012Validator(schema, format_checker=FormatChecker())
-    for row in records:
-        validator.validate(row['normalized_observation'])
-        if (row['session_date'] != target_session
-                or row['source_file_hash'] != parsed['source_file_hash']
-                or row['series_type'] != 'RAW_OHLC'
-                or row['normalized_observation']['symbol'] != row['ticker']
-                or row['normalized_observation']['exchange'] != 'XTKS'
-                or row['normalized_observation']['currency'] != 'JPY'
-                or row['normalized_observation']['series_type'] != 'RAW_OHLC'
-                or row['normalized_observation']['normalization']['basis_session'] != row['session_date']
-                or 'sha256=' + parsed['source_file_hash'] not in row['normalized_observation']['source_reference']['reference']
-                or row['open_semantics'] != 'OFFICIAL_SESSION_OPEN'
-                or row['close_semantics'] != 'OFFICIAL_SESSION_CLOSE'):
-            raise ValueError('JPX_ROW_PROVENANCE_MISMATCH')
-        o, h, l, c = (row[k] for k in ('open', 'high', 'low', 'close'))
-        if (any(type(v) not in (int, float) or not math.isfinite(v) for v in (o, h, l, c))
-                or not 0 < l <= min(o, c) <= max(o, c) <= h
-                or any(row[k] != row['normalized_observation'][k] for k in ('open', 'high', 'low', 'close'))
-                or row['normalized_observation']['session_date'] != row['session_date']):
-            raise ValueError('JPX_ROW_PRICE_MISMATCH')
-    if core.sha256(parsed_path) != parsed_hash:
-        raise ValueError('JPX_PARSED_CHANGED_DURING_VALIDATION')
-    return parsed, dict(parsed_sha256=parsed_hash, manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
-                       raw_sha256=parsed['source_file_hash'])
 
 
 def settle_phase(store, key, parsed_path=None):

@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from engine import minimal_trial as core
-from engine import one_session_dry_run as storage
+from engine import forward_artifacts as storage
 from engine.parallel_data import (CLASSES, PRICE9, PRIMARY, LOGISTIC, LIGHTGBM, MODEL_ROLES,
                                   digest, expanding_folds, probability_valid, rules, stamp,
                                   training_rows, hash_valid)

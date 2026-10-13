@@ -11,7 +11,8 @@ from engine import minimal_trial as core
 
 
 def code_commit():
-    if subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--', 'engine', 'models', 'config'],
+    if subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--', 'engine', 'models', 'config',
+                       'scripts/forecast_not_run_ledger.py'],
                       cwd=core.ROOT, check=False).returncode != 0:
         raise ValueError('DIRTY_EXECUTION_CODE')
     value = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=core.ROOT, text=True).strip()
@@ -51,7 +52,7 @@ def seal(path, record):
             os.fsync(stream.fileno())
 
 
-def commit(destination, builder, confirm):
+def commit(destination, builder, confirm=None):
     """Caller holds parent lock. Orphan .pending-* dirs are never final artifacts."""
     destination = Path(destination)
     if destination.exists():
@@ -59,8 +60,12 @@ def commit(destination, builder, confirm):
     stage = Path(tempfile.mkdtemp(prefix='.pending-', dir=destination.parent))
     try:
         builder(stage)
+        for file in stage.iterdir():
+            with file.open('rb') as stream:
+                os.fsync(stream.fileno())
         sync_dir(stage)
-        confirm(stage)
+        if confirm is not None:
+            confirm(stage)
         if destination.exists():
             raise FileExistsError('FORWARD_CREATE_ONLY')
         os.rename(stage, destination)

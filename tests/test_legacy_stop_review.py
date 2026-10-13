@@ -86,7 +86,10 @@ class LegacyReviewTests(unittest.TestCase):
         self.store.mkdir(parents=True)
         self.analysis = self.root / 'analysis'
         self.analysis.mkdir()
-        for name in review.FIX_PATHS:
+        from providers.jp.jpx_manual import acquisition_binding as binding
+        paths = (*binding.FILES, *binding.NODES, 'engine/forward_artifacts.py',
+                 'engine/forward_storage.py', binding.BINDER, binding.COMPATIBILITY)
+        for name in paths:
             destination = self.root / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes((PROJECT / name).read_bytes())

@@ -12,7 +12,7 @@ import tempfile
 from uuid import uuid4
 
 from engine import minimal_trial as core
-from engine import one_session_dry_run as frozen
+from engine import forward_artifacts as frozen
 
 VERSION = 'STOP_RETRY_RESUME_V2'
 SOFT_CODES = {'MANIFEST_NOT_VALIDATED', 'LOCAL_METADATA_SCHEMA_MISMATCH',

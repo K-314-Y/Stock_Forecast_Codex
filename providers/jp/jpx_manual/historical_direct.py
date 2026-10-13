@@ -29,7 +29,7 @@ from zoneinfo import ZoneInfo
 from pypdf import PdfReader
 from engine import minimal_trial as core
 from engine import official_gap as gap
-from engine import one_session_dry_run as frozen
+from engine import forward_artifacts as frozen
 from providers.jp.jpx_manual import parser
 from providers.jp.jpx_manual import historical_policy_v2 as lifecycle
 

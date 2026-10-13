@@ -69,7 +69,7 @@ def _policy():
 
 def register_existing(day, forecast_target):
     """Validate and register existing JPX data now; caller cannot set the clock."""
-    from engine import one_session_dry_run as probe
+    from engine import forward_artifacts as probe
     calendar = json.loads((core.ROOT / 'analysis/calendar_validation_2026-09-12.json').read_bytes())
     previous = fresh_bridge.expected_previous(calendar, forecast_target)
     policy, policy_path, policy_hash = _policy()
@@ -129,12 +129,12 @@ def register_existing(day, forecast_target):
         path=str(destination / 'record.json'), sha256=core.sha256(destination / 'record.json'), session_end=day)
 
 
-def verify(evidence, ticker, created, cutoff, previous):
+def verify_day(evidence, created, cutoff, previous):
     """Accept only authenticated Historical derivatives, never JPX files directly."""
-    from engine import one_session_dry_run as probe
+    from engine import forward_artifacts as probe
     day = evidence['session_end']
     path = Path(evidence['path']).resolve()
-    if (ticker not in core.CORE or evidence['source_role'] != 'FORECAST_FEATURE'
+    if (evidence['source_role'] != 'FORECAST_FEATURE'
             or path != (_root() / day / 'record.json').resolve()):
         raise ValueError('UNTRUSTED_HISTORICAL_BRIDGE_EVIDENCE')
     if core.sha256(path) != evidence['sha256']:
@@ -173,8 +173,18 @@ def verify(evidence, ticker, created, cutoff, previous):
     rows = sorted([dict(ticker=r['ticker'], session_date=day, close=r['close']) for r in parsed['records']], key=lambda r:r['ticker'])
     if rows != record['records']:
         raise ValueError('HISTORICAL_PRICE_SOURCE_MISMATCH')
-    closes = [(r['session_date'], r['close']) for r in rows if r['ticker'] == ticker]
+    closes = {r['ticker']: (r['session_date'], r['close']) for r in rows}
+    if len(rows) != len(core.CORE) or set(closes) != set(core.CORE):
+        raise ValueError('HISTORICAL_EXTENSION_GRAIN_INVALID')
     hashes = {str(path): evidence['sha256'], str(path.with_suffix('.sha256')): core.sha256(path.with_suffix('.sha256')),
               str(raw): record['raw_sha256'], record['parsed_path']: record['parsed_sha256'],
               str(manifest_path.resolve()): provenance['manifest_sha256'], str(policy_path.resolve()): policy_hash}
     return closes, hashes
+
+
+def verify(evidence, ticker, created, cutoff, previous):
+    """Backward-compatible ticker API; no cache survives this call."""
+    if ticker not in core.CORE:
+        raise ValueError('UNTRUSTED_HISTORICAL_BRIDGE_EVIDENCE')
+    closes, hashes = verify_day(evidence, created, cutoff, previous)
+    return [closes[ticker]], hashes
