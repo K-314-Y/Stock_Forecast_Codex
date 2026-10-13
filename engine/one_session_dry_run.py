@@ -255,6 +255,9 @@ def forecast_phase(store, target_session, ticker, inputs_path, forecast_id=None)
                 raise ValueError('FREEZE_MISSED_CUTOFF')
             _seal(stage / 'freeze_confirmation.json', dict(confirmed_at=confirmed.isoformat(),
                    forecast_sha256=core.sha256(stage / (forecast['forecast_id'] + '.json'))))
+            # This Probe callback creates entries after the shared stage fsync.
+            # Preserve their directory durability before publication.
+            _sync_dir(stage)
         _commit(destination, build, confirm)
     return key
 

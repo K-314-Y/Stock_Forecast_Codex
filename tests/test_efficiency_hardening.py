@@ -1,6 +1,7 @@
 """Public-tree, synthetic, offline efficiency and fail-closed regressions."""
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+import ast
 import hashlib
 import fcntl
 import hmac
@@ -72,6 +73,34 @@ class ComponentBindingTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'REVIEWED_LEGACY_RELEASE_INVALID'):
                     stops_policy.Stops(self.store).gate('2026-10-05')
                 path.write_bytes(before)
+
+    def test_package_initializer_addition_and_body_change_close_gate(self):
+        self.change_code()
+        self.renew()
+        for relative in binding.PACKAGE_INITIALIZERS:
+            path = self.root / relative
+            with self.subTest(relative=relative):
+                path.write_bytes(b'# new package initializer\n')
+                with self.assertRaises(ValueError):
+                    stops_policy.Stops(self.store)
+                first = binding.components(self.root)['package:' + relative]
+                path.write_bytes(b'# changed package initializer\n')
+                self.assertNotEqual(first, binding.components(self.root)['package:' + relative])
+                with self.assertRaises(ValueError):
+                    stops_policy.Stops(self.store)
+                path.unlink()
+                self.assertIsNone(stops_policy.Stops(self.store).gate('2026-10-05'))
+
+    def test_dangling_initializer_symlink_fails_closed(self):
+        self.change_code()
+        self.renew()
+        for relative in binding.PACKAGE_INITIALIZERS:
+            path = self.root / relative
+            with self.subTest(relative=relative):
+                path.symlink_to(self.root / 'missing-initializer')
+                with self.assertRaisesRegex(ValueError, 'ACQUISITION_COMPONENT_PATH_INVALID'):
+                    binding.components(self.root)
+                path.unlink()
 
     def test_relevant_engine_helper_changes_close_but_unrelated_functions_do_not(self):
         self.change_code()
@@ -615,6 +644,40 @@ class HistoricalDayEfficiencyTests(unittest.TestCase):
 
 
 class StorageFinalGuardTests(unittest.TestCase):
+    def test_actual_probe_confirmation_entries_are_synced_before_publication(self):
+        # Execute only the actual nested confirmation callback, without a Probe
+        # Forecast, market inputs, or any production artifact access.
+        project = Path(__file__).resolve().parents[1]
+        tree = ast.parse((project / 'engine/one_session_dry_run.py').read_bytes())
+        phase = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                     and node.name == 'forecast_phase')
+        confirm = next(node for node in ast.walk(phase) if isinstance(node, ast.FunctionDef)
+                       and node.name == 'confirm')
+        at = monitor.DEADLINE - timedelta(minutes=1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / 'bundle'
+            synced = []
+            real_sync = forward_storage.sync_dir
+            def sync(path):
+                if Path(path).name.startswith('.pending-'):
+                    synced.append({entry.name for entry in Path(path).iterdir()})
+                real_sync(path)
+            namespace = dict(_now=lambda: at, JST=monitor.JST,
+                             frozen=at - timedelta(minutes=1), cutoff=monitor.DEADLINE,
+                             forecast={'forecast_id': 'synthetic'}, core=core,
+                             _seal=forward_storage.seal, _sync_dir=sync)
+            exec(compile(ast.Module(body=[confirm], type_ignores=[]), '<actual-probe-confirm>', 'exec'), namespace)
+            with patch.object(forward_storage, 'sync_dir', side_effect=sync):
+                forward_storage.commit(destination,
+                    lambda stage: (stage / 'synthetic.json').write_bytes(b'{}'), namespace['confirm'])
+            self.assertEqual(len(synced), 2)
+            self.assertNotIn('freeze_confirmation.json', synced[0])
+            self.assertTrue({'freeze_confirmation.json', 'freeze_confirmation.sha256'} <= synced[1])
+            self.assertEqual(core.read_frozen(destination / 'freeze_confirmation.json'),
+                             {'confirmed_at': at.isoformat(),
+                              'forecast_sha256': core.sha256(destination / 'synthetic.json')})
+
     def test_staging_durability_precedes_final_cutoff_confirmation(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)

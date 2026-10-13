@@ -1,9 +1,9 @@
 """Acquisition component binding; Git identities are immutable audit lineage.
 
 Full provider/config bytes and only the engine helpers reached by acquisition
-are bound. The one-time v1 compatibility mapping admits this reviewed refactor,
-not arbitrary changes. Legacy adapters/policy must remain byte-identical to their
-first committed introduction, descended from the declared pre-refactor base.
+are bound, including package initializer presence and bytes. The v2 compatibility
+mapping admits only this reviewed refactor. Both verifier and mapping stay
+byte-identical to the v2 mapping's introduction, descended from the declared base.
 """
 import ast
 import copy
@@ -13,9 +13,11 @@ import os
 from pathlib import Path
 import subprocess
 
-VERSION = 'jpx-acquisition-components-v1'
-COMPATIBILITY = 'config/jpx_acquisition_binding_v1.json'
+VERSION = 'jpx-acquisition-components-v2'
+COMPATIBILITY = 'config/jpx_acquisition_binding_v2.json'
 BINDER = 'providers/jp/jpx_manual/acquisition_binding.py'
+PACKAGE_INITIALIZERS = ('engine/__init__.py', 'providers/__init__.py',
+                        'providers/jp/__init__.py', 'providers/jp/jpx_manual/__init__.py')
 FILES = (
     'providers/jp/jpx_manual/historical_direct.py',
     'providers/jp/jpx_manual/historical_policy_v2.py',
@@ -89,6 +91,20 @@ def components(root, *, commit=None, infrastructure=False):
     def read(relative):
         return git(root, 'show', commit + ':' + relative) if commit else _bytes(root, relative)
     values = {name: read(name) for name in FILES}
+    for path in PACKAGE_INITIALIZERS:
+        if commit:
+            present = bool(git(root, 'ls-tree', commit, '--', path).strip())
+        else:
+            target = root / path
+            if any(parent.is_symlink() for parent in target.parents):
+                raise ValueError('ACQUISITION_COMPONENT_PATH_INVALID:' + path)
+            try:
+                target.lstat()
+                present = True
+            except FileNotFoundError:
+                present = False
+        marker = b'jpx-acquisition-package-initializer:v2:'
+        values['package:' + path] = marker + (b'present\n' + read(path) if present else b'absent\n')
     for path, names in NODES.items():
         parts = _parts(read(path), names)
         values[path + ':module_context'] = parts['module_context']
@@ -140,13 +156,15 @@ def _compatibility(root):
     base = 'f60fbba965ee858ca6e7a3afefbdb4e09655a4f0'
     # Do not permit a dirty or later-edited mapping/verifier to grant an old release.
     # This is a local immutable Git trust checkpoint, not whole-HEAD validity.
+    introductions = git(root, 'log', '--diff-filter=A', '--format=%H', 'HEAD', '--', COMPATIBILITY).decode().splitlines()
+    if len(introductions) != 1:
+        raise ValueError('ACQUISITION_COMPATIBILITY_CHECKPOINT_INVALID')
+    introduced = introductions[0]
+    git(root, 'merge-base', '--is-ancestor', base, introduced)
     mapping_bytes = None
+    # v2 pins both blobs at the v2 mapping's first introduction. The original
+    # v1 mapping remains immutable history; no old receipt is rewritten.
     for path in (BINDER, COMPATIBILITY):
-        introductions = git(root, 'log', '--diff-filter=A', '--format=%H', 'HEAD', '--', path).decode().splitlines()
-        if len(introductions) != 1:
-            raise ValueError('ACQUISITION_COMPATIBILITY_CHECKPOINT_INVALID')
-        introduced = introductions[0]
-        git(root, 'merge-base', '--is-ancestor', base, introduced)
         checked = _bytes(root, path)
         if checked != git(root, 'show', introduced + ':' + path):
             raise ValueError('ACQUISITION_COMPATIBILITY_CHANGED')

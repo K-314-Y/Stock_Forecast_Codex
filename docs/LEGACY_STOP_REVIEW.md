@@ -54,10 +54,13 @@ official_gapのcalendar定数、expected_gap_sessions/stage_existing_pdf、stora
 固定し、annotated/conditional/global再代入も検出する。取得に到達しない関数bodyは除外する。
 README、monitor、Shadow ML、report、独立した無関係engine moduleは含めない。
 
-新receiptは`jpx-acquisition-components-v1`を持つ。既存generation 2–4では記録commitの
+engine、providers、providers.jp、providers.jp.jpx_manualのpackage initializerは
+存在/不存在と全byteを固定し、追加・変更・symlink化でgateを閉じる。
+新receiptは`jpx-acquisition-components-v2`を持つ。既存generation 2–4では記録commitの
 component snapshotを使用し、このrefactorの完全一致したbefore/after集合だけを
-`config/jpx_acquisition_binding_v1.json`で許可する。mapperとmappingは指定baseを祖先に持つ
-最初の導入commitからbyte変更を許さない。比較済みmapping bytesだけをstrict JSONで解析する。
+`config/jpx_acquisition_binding_v2.json`で許可する。v1 mappingと既存証拠は変更しない。
+mapperとv2 mappingは指定baseを祖先に持つv2 mappingの最初の導入commitからbyte変更を
+許さない。比較済みmapping bytesだけをstrict JSONで解析する。
 任意のsource差分やmapping編集は許可しない。generation 1は古いchain内で証拠を検証し、
 最新のunanchored legacy receiptを自動承認しない。最適化だけのgeneration 5は不要。
 
