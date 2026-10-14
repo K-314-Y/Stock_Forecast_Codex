@@ -24,10 +24,14 @@ class ReleaseTransitionTests(unittest.TestCase):
         f.git('branch','-m',m.BRANCH)
         project = Path(__file__).resolve().parents[1]
         for relative in (*m.CODE_PATHS, 'config/forward_trial_execution_policy.json',
-                         'config/primary_forward_trial_v1.json',
-                         'analysis/calendar_validation_2026-09-12.json'):
+                         'config/primary_forward_trial_v1.json'):
             dest = f.root/relative; dest.parent.mkdir(parents=True,exist_ok=True)
             dest.write_bytes((project/relative).read_bytes())
+        calendar=f.root/'analysis/calendar_validation_2026-09-12.json'
+        calendar.write_bytes(m.canonical({'jp_sessions':[m.SESSION,m.TARGET]}))
+        rules=m.strict_json((f.root/'config/forward_trial_execution_policy.json').read_bytes())
+        rules['calendar_sha256']=m.digest(calendar)
+        (f.root/'config/forward_trial_execution_policy.json').write_bytes(m.canonical(rules))
         f.git('add','.'); f.commit('synthetic monitor baseline')
         for _ in range(3): f.change_code(); f.renew()
         cls.previous = policy.Stops(f.store).index['reviewed_legacy_releases'][-1]['receipt_reference']
