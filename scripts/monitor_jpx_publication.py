@@ -270,6 +270,12 @@ def verify_context(root, folder):
     if branch != BRANCH:
         raise ValueError('MONITOR_BRANCH_CONFLICT')
     armed = read_state(folder / 'armed.json')
+    if 'acquisition_fingerprint' in context or 'context_sha256' in armed:
+        from providers.jp.jpx_manual import acquisition_binding as binding
+        if armed.get('context_sha256') != hashlib.sha256(canonical(context)).hexdigest():
+            raise ValueError('MONITOR_CONTEXT_BINDING_CHANGED')
+        if context.get('acquisition_fingerprint') != binding.fingerprint(binding.components(root, infrastructure=True)):
+            raise ValueError('MONITOR_ACQUISITION_COMPONENT_CHANGED')
     if (armed.get('target_session') != SESSION
             or datetime.fromisoformat(armed['deadline']) != DEADLINE
             or not re.fullmatch(r'[0-9a-f]{40}', armed['code_commit'])

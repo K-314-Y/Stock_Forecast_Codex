@@ -4,6 +4,31 @@ For calendar-selected new windows and the 08:35 final check, see
 [Task 10C-7A deployment](FORWARD_REPAIR_10C_7A.md). The original one-night
 authorization and its immutable completed evidence are described below.
 
+Task 10C-7B3 adds an explicitly authorized, offline identity renewal:
+
+```sh
+.venv/bin/python scripts/install_jpx_publication_monitor.py --arm --rebind-target 2026-10-15
+```
+
+This installer does not start a checking service. It accepts only a pre-final-window
+identity STOP caused by the acquisition config or component code changing. The
+previous monitor code/config must match its committed ancestor. Calendar, target,
+deadline, execution policy, official discovery, STOP and release evidence must
+remain unchanged; discovery is replayed through the existing offline validators.
+Security challenges, redirects, interrupted checks, completed history and final or
+deadline reservations cannot be reset. Exact old envelopes are retained create-only
+under `bindings/<new identity>/` before current projections are replaced. The STOP
+is cleared only after the new context passes verification. Partial renewal fails
+closed with the STOP still present.
+
+The renewed context pins current acquisition component fingerprints (including
+the binding verifier) and monitor code, rather than global HEAD. Unrelated commits
+and runtime writes do not invalidate it. This is a monitor-only authorization:
+the historical acquisition release is neither changed nor renewed. Its separate
+gate can remain closed until its own explicitly authorized review. Generated unit
+definitions must match the installed units, then daemon-reload and timer enable
+arm hourly polling, 08:35 final check and 08:45 bookkeeping without immediate HTTP.
+
 This task explicitly authorizes only metadata polling for 2026-10-13, until
 2026-10-14 08:45 JST. The monitor never imports execution modules and never
 fetches a PDF. Fresh, Forecast, Freeze, scoring, historical registration,
