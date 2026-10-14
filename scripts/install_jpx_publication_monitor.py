@@ -223,7 +223,7 @@ def rebind(root, *, now=None):
         monitor.verify_context(root, folder)
         monitor.write_state(folder / 'latest.json', dict(
             target_session=monitor.SESSION, checked_at_jst=now.isoformat(),
-            result_state='JPX_PUBLICATION_MONITOR_BOUND_OFFLINE', deadline_expired=False,
+            result_state=monitor.BOUND, deadline_expired=False,
             http_status=None, publication_found=False, code_commit=commit, binding_identity=identity,
             source_identity={'monthly_json_url': context['monthly_url']}))
         with monitor._folder_fd(folder) as directory:

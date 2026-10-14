@@ -71,6 +71,20 @@ class RebindTests(unittest.TestCase):
         (self.root / 'state/unrelated.json').write_text('{}')
         m.verify_context(self.root, self.folder)
 
+    def test_rebind_immediate_check_zero_http_then_due_check_accepted(self):
+        self.renew()
+        calls = []
+        def fetch(url):
+            calls.append(url)
+            return 200, {'content-type':'application/json'}, b'{"TableDatas":[]}'
+        immediate = m.check_once(self.root, now=self.now, fetch=fetch)
+        self.assertEqual(immediate['result_state'], m.BOUND)
+        self.assertEqual(calls, [])
+        due = m.check_once(self.root, now=self.now + timedelta(hours=1), fetch=fetch)
+        self.assertEqual(due['result_state'], m.ABSENT)
+        self.assertEqual(calls, [self.receipt['monthly_json_reference_url']])
+        self.assertFalse((self.folder / 'STOP.json').exists())
+
     def test_relevant_config_and_acquisition_code_changes_invalidate(self):
         self.renew()
         for path in (self.config, self.root / 'providers/jp/jpx_manual/historical_direct.py'):

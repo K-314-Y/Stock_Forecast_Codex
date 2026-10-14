@@ -38,6 +38,7 @@ DETECTED = 'JPX_2026_10_13_PUBLICATION_DETECTED'
 EXPIRED = 'JPX_PUBLICATION_MONITOR_DEADLINE_EXPIRED'
 STOP = 'JPX_PUBLICATION_MONITOR_STOP'
 PENDING = 'JPX_PUBLICATION_MONITOR_CHECK_IN_PROGRESS'
+BOUND = 'JPX_PUBLICATION_MONITOR_BOUND_OFFLINE'
 TERMINAL = {DETECTED, EXPIRED, STOP}
 UNIT = 'jpx-publication-20261013'
 MAX_FINALIZATION_ATTEMPTS = 3
@@ -563,7 +564,7 @@ def check_once(root=ROOT, *, now=None, fetch=get_monthly, context_check=verify_c
                 old = read_state(folder / 'STOP.json')
             elif present(folder / 'latest.json'):
                 old = read_state(folder / 'latest.json')
-            if old is not None and (old['target_session'] != SESSION or old['result_state'] not in TERMINAL | {ABSENT, PENDING}):
+            if old is not None and (old['target_session'] != SESSION or old['result_state'] not in TERMINAL | {ABSENT, PENDING, BOUND}):
                 raise ValueError('MONITOR_STATE_CONTEXT_CONFLICT')
         except (ValueError, OSError, KeyError, TypeError) as error:
             old = dict(checked_at_jst=now.isoformat(), target_session=SESSION,
