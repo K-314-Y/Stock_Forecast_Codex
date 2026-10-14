@@ -232,10 +232,235 @@ def rebind(root, *, now=None):
         return dict(binding_identity=identity, code_commit=commit, http_requests=0)
 
 
-def install_rebind(target):
+INDEX_REFERENCE = 'data/jpx_historical_direct/current_stops_v2.json'
+TRANSITION_SCHEMA = 'jpx-monitor-reviewed-release-transition-v1'
+
+
+def _transition_window(now):
+    if now.tzinfo is None or now >= monitor.DEADLINE - monitor.FINAL_CHECK_LEAD:
+        raise ValueError('MONITOR_REBIND_WINDOW_CLOSED')
+
+
+def _transition_receipt(root, path):
+    from engine import minimal_trial as core
+    from providers.jp.jpx_manual import historical_policy_v2 as policy
+    folder = root / 'state/jpx_publication_monitor' / monitor.SESSION
+    path = monitor.safe_path(root, str(Path(path).relative_to(root)))
+    if path.parent.parent != folder / 'release_transitions' or path.name != 'transition.json':
+        raise ValueError('MONITOR_RELEASE_TRANSITION_SCOPE_INVALID')
+    value = core.read_frozen(path)
+    if (value['schema_version'] != TRANSITION_SCHEMA or value['project_root'] != str(root)
+            or value['target_session'] != monitor.SESSION
+            or value['forecast_target_session'] != monitor.TARGET
+            or value['deadline'] != monitor.DEADLINE.isoformat()):
+        raise ValueError('MONITOR_RELEASE_TRANSITION_IDENTITY_INVALID')
+    for ref in value['before'].values():
+        source = policy.verify_reference(ref)
+        if source.parent != path.parent or source.is_symlink():
+            raise ValueError('MONITOR_RELEASE_TRANSITION_SCOPE_INVALID')
+    return folder, path, value
+
+
+def prepare_release_transition(root, *, expected_previous_release_sha256, now=None):
+    """Capture exact pre-transition bytes; authorize only one append-only renewal.
+
+    The caller quiesces all three timers/services before begin_release_transition.
+    This preparation neither changes current projections nor runs a service.
+    """
+    from engine import forward_artifacts as storage
+    from providers.jp.jpx_manual import historical_policy_v2 as policy
+    from providers.jp.jpx_manual import legacy_stop_review as review
+    from providers.jp.jpx_manual import acquisition_binding as binding
+    root = Path(root).resolve(); now = now or datetime.now(monitor.JST)
+    _transition_window(now)
+    folder = root / 'state/jpx_publication_monitor' / monitor.SESSION
+    with storage._locked(root / 'data/jpx_historical_direct'), monitor.locked(folder):
+        stops = policy.Stops.__new__(policy.Stops)
+        stops._load_evidence(root / 'data/jpx_historical_direct')
+        chain = review._verified_chain(stops, bind_latest=False)
+        if not chain or chain[-1][0]['sha256'] != expected_previous_release_sha256:
+            raise ValueError('MONITOR_RELEASE_TRANSITION_PREVIOUS_RELEASE_INVALID')
+        context = monitor.read_state(folder / 'context.json')
+        armed = monitor.read_state(folder / 'armed.json')
+        latest = monitor.read_state(folder / 'latest.json')
+        if any(monitor.present(folder / name) for name in (
+                'final_check_reserved.json', 'deadline_reserved.json', 'deadline_retry.json',
+                'task10c6c_completion.json')):
+            raise ValueError('MONITOR_REBIND_RESERVED_OR_COMPLETED')
+        # A deployment identity STOP is eligible only with its exact old Git code.
+        # Security, integrity, interrupted HTTP and terminal results never qualify.
+        has_stop = monitor.present(folder / 'STOP.json')
+        if has_stop:
+            stop = monitor.read_state(folder / 'STOP.json')
+            if (stop != latest or stop.get('stop_reason') != 'MONITOR_CODE_CHANGED'
+                    or stop.get('http_status') is not None or stop.get('deadline_expired') is not False):
+                raise ValueError('MONITOR_REBIND_SECURITY_STOP_FORBIDDEN')
+        elif latest['result_state'] not in (monitor.ABSENT, monitor.BOUND):
+            raise ValueError('MONITOR_RELEASE_TRANSITION_PENDING_OR_TERMINAL')
+        if (context.get('target_session') != monitor.SESSION
+                or context.get('forecast_target_session') != monitor.TARGET
+                or context.get('deadline') != monitor.DEADLINE.isoformat()
+                or armed.get('target_session') != monitor.SESSION
+                or armed.get('deadline') != monitor.DEADLINE.isoformat()
+                or armed.get('context_sha256') != monitor.hashlib.sha256(monitor.canonical(context)).hexdigest()
+                or set(armed['code_hashes']) != set(monitor.CODE_PATHS)):
+            raise ValueError('MONITOR_RELEASE_TRANSITION_IDENTITY_INVALID')
+        binding.git(root, 'merge-base', '--is-ancestor', armed['code_commit'], 'HEAD')
+        for name, digest in armed['code_hashes'].items():
+            if monitor.hashlib.sha256(binding.git(root, 'show', armed['code_commit'] + ':' + name)).hexdigest() != digest:
+                raise ValueError('MONITOR_REBIND_OLD_CODE_INVALID')
+        for name, digest in context['protected_references'].items():
+            if monitor.digest(monitor.safe_path(root, name)) != digest:
+                raise ValueError('MONITOR_REBIND_PROTECTED_EVIDENCE_CHANGED:' + name)
+        if (INDEX_REFERENCE not in context['protected_references']
+                or context['acquisition_fingerprint'] != binding.fingerprint(binding.components(root, infrastructure=True))):
+            raise ValueError('MONITOR_RELEASE_TRANSITION_ACQUISITION_CHANGED')
+        # A random create-only transaction identity prevents reuse of an old intent.
+        archive = folder / 'release_transitions' / monitor.uuid4().hex
+        before = {}
+        with monitor._folder_fd(archive, create=True) as destination:
+            sources = dict(context=folder/'context.json', armed=folder/'armed.json',
+                           latest=folder/'latest.json', current_stops=root/INDEX_REFERENCE)
+            if has_stop: sources['stop'] = folder/'STOP.json'
+            for name, source in sources.items():
+                payload = source.read_bytes()
+                fd = os.open(name+'.json', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,
+                             mode=0o600, dir_fd=destination)
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(payload); stream.flush(); os.fsync(stream.fileno())
+                before[name] = policy.reference(archive/(name+'.json'))
+            os.fsync(destination)
+        marker = dict(target_session=monitor.SESSION, checked_at_jst=now.isoformat(),
+                      result_state=monitor.STOP, deadline_expired=False, http_status=None,
+                      publication_found=False, stop_reason='AUTHORIZED_RELEASE_TRANSITION_IN_PROGRESS',
+                      transition_id=archive.name)
+        value = dict(schema_version=TRANSITION_SCHEMA, project_root=str(root),
+                     target_session=monitor.SESSION, forecast_target_session=monitor.TARGET,
+                     deadline=monitor.DEADLINE.isoformat(), prepared_at=now.isoformat(),
+                     previous_release_reference=chain[-1][0], generation=len(chain)+1,
+                     before=before, maintenance_stop=marker)
+        policy.seal(archive/'transition.json', value)
+        return policy.reference(archive/'transition.json')
+
+
+def begin_release_transition(root, transition):
+    """CAS the captured state, then latch a zero-HTTP maintenance STOP."""
+    root = Path(root).resolve()
+    folder, path, value = _transition_receipt(root, transition)
+    with monitor.locked(folder):
+        _transition_window(datetime.now(monitor.JST))
+        for name, ref in value['before'].items():
+            source = root/INDEX_REFERENCE if name == 'current_stops' else folder/('STOP.json' if name == 'stop' else name+'.json')
+            if monitor.digest(source) != ref['sha256']:
+                raise ValueError('MONITOR_RELEASE_TRANSITION_STATE_CHANGED')
+        if 'stop' not in value['before'] and monitor.present(folder/'STOP.json'):
+            raise ValueError('MONITOR_REBIND_SECURITY_STOP_FORBIDDEN')
+        monitor.write_state(folder/'STOP.json', value['maintenance_stop'])
+        monitor.write_state(folder/'latest.json', value['maintenance_stop'])
+
+
+def abort_release_transition(root, transition):
+    """Only a pre-release failure can restore the exact captured projections."""
+    from engine import forward_artifacts as storage
+    from providers.jp.jpx_manual import historical_policy_v2 as policy
+    from providers.jp.jpx_manual import legacy_stop_review as review
+    root = Path(root).resolve()
+    folder, path, value = _transition_receipt(root, transition)
+    with storage._locked(root/'data/jpx_historical_direct'), monitor.locked(folder):
+        stops = policy.Stops.__new__(policy.Stops)
+        stops._load_evidence(root/'data/jpx_historical_direct')
+        chain = review._verified_chain(stops,bind_latest=False)
+        if (monitor.digest(root/INDEX_REFERENCE) != value['before']['current_stops']['sha256']
+                or len(chain) != value['generation']-1
+                or chain[-1][0] != value['previous_release_reference']
+                or monitor.read_state(folder/'STOP.json') != value['maintenance_stop']):
+            raise ValueError('MONITOR_RELEASE_TRANSITION_ABORT_FORBIDDEN')
+        monitor.write_state(folder/'latest.json', monitor.read_state(Path(value['before']['latest']['path'])))
+        if 'stop' in value['before']:
+            monitor.write_state(folder/'STOP.json', monitor.read_state(Path(value['before']['stop']['path'])))
+        else:
+            with monitor._folder_fd(folder) as fd:
+                os.unlink('STOP.json', dir_fd=fd); os.fsync(fd)
+
+
+def rebind_release_transition(root, transition, *, expected_release_sha256, now=None):
+    """Explicit sealed intent + exact one-generation index delta; never blind rebind."""
+    from engine import forward_artifacts as storage
+    from providers.jp.jpx_manual import acquisition_binding as binding
+    from providers.jp.jpx_manual import historical_policy_v2 as policy
+    from providers.jp.jpx_manual import legacy_stop_review as review
+    root = Path(root).resolve(); now = now or datetime.now(monitor.JST)
+    _transition_window(now)
+    folder, path, value = _transition_receipt(root, transition)
+    with storage._locked(root/'data/jpx_historical_direct'), monitor.locked(folder):
+        if (not monitor.present(folder/'STOP.json') or not monitor.present(folder/'latest.json')
+                or monitor.read_state(folder/'STOP.json') != value['maintenance_stop']
+                or monitor.read_state(folder/'latest.json') != value['maintenance_stop']):
+            raise ValueError('MONITOR_RELEASE_TRANSITION_MAINTENANCE_CHANGED')
+        if binding.git(root, 'status', '--porcelain=v1'):
+            raise ValueError('COMMIT_MONITOR_CODE_BEFORE_ARMING')
+        old_context = monitor.read_state(Path(value['before']['context']['path']))
+        old_index = monitor.read_state(Path(value['before']['current_stops']['path']))
+        stops = policy.Stops(root/'data/jpx_historical_direct')
+        chain = review._verified_chain(stops)
+        if (len(chain) != value['generation'] or chain[-1][1]['generation'] != value['generation']
+                or chain[-1][0]['sha256'] != expected_release_sha256
+                or chain[-1][1]['previous_release_reference'] != value['previous_release_reference']
+                or old_index['reviewed_legacy_releases'] != stops.index['reviewed_legacy_releases'][:-1]
+                or {k:v for k,v in old_index.items() if k!='reviewed_legacy_releases'} !=
+                   {k:v for k,v in stops.index.items() if k!='reviewed_legacy_releases'}
+                or chain[-1][1]['current_code_commit'] != binding.git(root,'rev-parse','HEAD').decode().strip()):
+            raise ValueError('MONITOR_RELEASE_TRANSITION_INDEX_DELTA_INVALID')
+        stops.gate(monitor.SESSION)  # Other host/global/session security STOPs still apply.
+        for name, ref in value['before'].items():
+            if name in ('context','armed') and monitor.digest(folder/(name+'.json')) != ref['sha256']:
+                raise ValueError('MONITOR_RELEASE_TRANSITION_STATE_CHANGED')
+        for name, digest in old_context['protected_references'].items():
+            expected = value['before']['current_stops']['sha256'] if name == INDEX_REFERENCE else monitor.digest(monitor.safe_path(root,name))
+            if digest != expected:
+                raise ValueError('MONITOR_REBIND_PROTECTED_EVIDENCE_CHANGED:'+name)
+        context = build_context(root, old_context['discovery_reference'])
+        receipt_path = Path(chain[-1][0]['path'])
+        new_refs = {str(p.relative_to(root)) for p in (receipt_path,receipt_path.with_suffix('.sha256'))}
+        context['protected_references'][str(receipt_path.with_suffix('.sha256').relative_to(root))] = monitor.digest(receipt_path.with_suffix('.sha256'))
+        if set(context['protected_references']) != set(old_context['protected_references']) | new_refs:
+            raise ValueError('MONITOR_REBIND_PROTECTION_INVENTORY_CONFLICT')
+        context['acquisition_fingerprint'] = binding.fingerprint(binding.components(root,infrastructure=True))
+        commit = binding.git(root,'rev-parse','HEAD').decode().strip()
+        if context['acquisition_fingerprint'] != chain[-1][1].get('component_fingerprint'):
+            raise ValueError('MONITOR_RELEASE_TRANSITION_ACQUISITION_CHANGED')
+        armed = dict(started_at_jst=now.isoformat(), target_session=monitor.SESSION,
+                     deadline=monitor.DEADLINE.isoformat(),code_commit=commit,
+                     context_sha256=monitor.hashlib.sha256(monitor.canonical(context)).hexdigest(),
+                     code_hashes={p:monitor.digest(root/p) for p in monitor.CODE_PATHS})
+        if (binding.git(root,'status','--porcelain=v1')
+                or commit != chain[-1][1]['current_code_commit']
+                or any(digest != monitor.hashlib.sha256(binding.git(root,'show',commit+':'+name)).hexdigest()
+                       for name,digest in armed['code_hashes'].items())):
+            raise ValueError('MONITOR_RELEASE_TRANSITION_CURRENT_CODE_CHANGED')
+        identity = monitor.hashlib.sha256(monitor.canonical(dict(context=context,armed=armed))).hexdigest()
+        policy.seal(path.parent/'rebind.json', dict(binding_identity=identity,
+                    release_reference=chain[-1][0],current_stops=policy.reference(root/INDEX_REFERENCE),
+                    authorization='EXPLICIT_REVIEWED_RELEASE_STATE_TRANSITION',http_requests=0))
+        monitor.write_state(folder/'context.json',context)
+        monitor.write_state(folder/'armed.json',armed)
+        monitor.verify_context(root,folder)
+        _transition_window(datetime.now(monitor.JST))
+        monitor.write_state(folder/'latest.json',dict(target_session=monitor.SESSION,
+                    checked_at_jst=now.isoformat(),result_state=monitor.BOUND,deadline_expired=False,
+                    http_status=None,publication_found=False,code_commit=commit,binding_identity=identity,
+                    source_identity={'monthly_json_url':context['monthly_url']}))
+        with monitor._folder_fd(folder) as fd:
+            os.unlink('STOP.json',dir_fd=fd);os.fsync(fd)
+        return dict(binding_identity=identity,code_commit=commit,http_requests=0)
+
+
+def install_rebind(target, *, release_transition=None, expected_release_sha256=None, defer_rearm=False):
     """Arm generated timers without starting a service or making HTTP calls."""
     root = monitor.ROOT
     monitor.configure_window(root, target)
+    if release_transition and not defer_rearm:
+        raise ValueError('MONITOR_RELEASE_TRANSITION_REQUIRES_DEFERRED_REARM')
     env = monitor.systemd_env()
     if subprocess.check_output(['git', '-C', str(root), 'status', '--porcelain'], text=True):
         raise ValueError('COMMIT_MONITOR_CODE_BEFORE_ARMING')
@@ -244,14 +469,16 @@ def install_rebind(target):
     for name, content in definitions.items():
         if (destination / name).read_text() != content:
             raise ValueError('EXISTING_SYSTEMD_UNIT_CONFLICT:' + name)
-    subprocess.run(['systemctl', '--user', 'stop', monitor.UNIT + '.timer', monitor.UNIT + '-final.timer',
-                    monitor.UNIT + '.service', monitor.UNIT + '-final.service'], env=env, check=True)
-    result = rebind(root)
+    subprocess.run(['systemctl', '--user', 'stop', *[monitor.UNIT+suffix for suffix in
+                    ('.timer','-final.timer','-deadline.timer','.service','-final.service','-deadline.service')]], env=env, check=True)
+    result = (rebind_release_transition(root,release_transition,expected_release_sha256=expected_release_sha256)
+              if release_transition else rebind(root))
     subprocess.run(['systemd-analyze', '--user', 'verify',
                     *[str(destination / name) for name in definitions]], env=env, check=True)
     subprocess.run(['systemctl', '--user', 'daemon-reload'], env=env, check=True)
-    subprocess.run(['systemctl', '--user', 'enable', '--now', monitor.UNIT + '-deadline.timer',
-                    monitor.UNIT + '-final.timer', monitor.UNIT + '.timer'], env=env, check=True)
+    if not defer_rearm:
+        subprocess.run(['systemctl', '--user', 'enable', '--now', monitor.UNIT + '-deadline.timer',
+                        monitor.UNIT + '-final.timer', monitor.UNIT + '.timer'], env=env, check=True)
     print(json.dumps(result, ensure_ascii=False))
 
 
@@ -313,10 +540,18 @@ if __name__ == '__main__':
     parser.add_argument('--arm', action='store_true', required=True)
     parser.add_argument('--discovery-reference', help='Retained official same-month discovery.json; select next calendar window')
     parser.add_argument('--rebind-target', help='Explicit offline identity-STOP renewal; no immediate HTTP')
+    parser.add_argument('--release-transition', help='Sealed explicit reviewed-release transition intent')
+    parser.add_argument('--expected-release-sha256', help='Exact newly verified release SHA256')
+    parser.add_argument('--defer-rearm', action='store_true', help='Keep timers stopped for fresh-process verification')
     args = parser.parse_args()
     if args.rebind_target:
         if args.discovery_reference:
             parser.error('Rebind uses the existing retained discovery reference')
-        install_rebind(args.rebind_target)
+        if bool(args.release_transition) != bool(args.expected_release_sha256):
+            parser.error('Release transition and expected release SHA256 are required together')
+        install_rebind(args.rebind_target,release_transition=args.release_transition,
+                       expected_release_sha256=args.expected_release_sha256,defer_rearm=args.defer_rearm)
     else:
+        if args.release_transition or args.expected_release_sha256 or args.defer_rearm:
+            parser.error('Transition options require --rebind-target')
         install(args.discovery_reference)

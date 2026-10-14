@@ -34,6 +34,26 @@ This task explicitly authorizes only metadata polling for 2026-10-13, until
 fetches a PDF. Fresh, Forecast, Freeze, scoring, historical registration,
 release generation and prospective PIT writes are absent from this path.
 
+Task 10C-7B5 adds a separate explicit reviewed-release state transition. It does
+not broaden the existing config/code identity-STOP rebind. The installer prepares
+a create-only sealed intent with exact old context, armed/latest/STOP (if present)
+and current STOP-index bytes. After all three timers and services are quiesced,
+`begin_release_transition` compares those identities and latches a maintenance
+STOP, so a manual monitor invocation also performs zero HTTP. The caller then
+uses the existing `manual_review_renewal`; the installer never authors a release.
+
+`--arm --rebind-target TARGET --release-transition INTENT --expected-release-sha256 SHA
+--defer-rearm` accepts only the exact next verified release and one append to the
+captured index. All other index fields, discovery, calendar, policy, original STOP
+and old release protection remain exact. The new receipt and sidecar are added to
+protection. The acquisition lock precedes the monitor lock during verification;
+the maintenance STOP remains until the new projections pass the official reader.
+Partial writes retain it and never fall back to the old context. The caller must
+run fresh-process validation before rearming the three timers; no service is
+started by this command. Before release publication only,
+`abort_release_transition` can restore the captured monitor projections. After
+publication rollback/deletion is forbidden, and failed rebind stays fail closed.
+
 The local `state/jpx_publication_monitor/2026-10-13/context.json` checkpoint was
 created offline while the existing historical STOP gate passed at the approved
 baseline HEAD. It binds the official HTML → monthly list → October JSON discovery
