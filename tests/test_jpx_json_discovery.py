@@ -32,6 +32,8 @@ class Tests(unittest.TestCase):
         root = Path(temp) / 'root'
         (root / 'config').mkdir(parents=True)
         (root / 'config/jpx_daily_acquisition_config.json').write_bytes((ROOT / 'config/jpx_daily_acquisition_config.json').read_bytes())
+        (root / 'analysis').mkdir()
+        (root / 'analysis/calendar_validation_2026-09-12.json').write_bytes((ROOT / 'analysis/calendar_validation_2026-09-12.json').read_bytes())
         return root
 
     def test_discovery_and_no_hardcoded_endpoint(self):

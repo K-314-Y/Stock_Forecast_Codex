@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "config_version": "2026-10-08-historical-direct-offline-tested",
+  "config_version": "2026-10-14-validated-historical-admission",
   "purpose": "Acquire only JPX daily-report sessions that are not already valid locally",
   "timezone": "Asia/Tokyo",
   "device": "LOCAL_LINUX",
@@ -42,10 +42,11 @@
   "historical_direct": {
     "scope": "HISTORICAL_CATCH_UP_ONLY",
     "acquisition_method": "OFFICIAL_LISTING_DIRECT_HTTPS",
-    "allowed_sessions": ["2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09", "2026-10-13"],
-    "forecast_target": "2026-10-14",
     "listing_url": "https://www.jpx.co.jp/markets/statistics-equities/daily/",
-    "allowed_hosts": ["www.jpx.co.jp", "jpx.co.jp"],
+    "allowed_hosts": [
+      "www.jpx.co.jp",
+      "jpx.co.jp"
+    ],
     "execution": "EXPLICIT_ONE_SESSION_ONLY",
     "scheduled": false,
     "automatic_retry": true,
@@ -59,7 +60,10 @@
     "automatic_manifest_or_runtime_update": false,
     "registration": "Validated immutable bundle requires explicit Manifest registration and existing Historical Close Bridge; never label it manual/browser.",
     "status": "FIXTURE_TESTED_LIVE_NOT_RUN",
-    "terms_status": "UNRESOLVED"
+    "terms_status": "UNRESOLVED",
+    "session_admission": "VALIDATED_COMPLETED_HISTORICAL_SESSION",
+    "calendar": "analysis/calendar_validation_2026-09-12.json",
+    "calendar_sha256": "611f69fe4b11b57c10daa5f5981a2e3ea13750cfe62d1518a90146c3e3738f51"
   },
   "acquisition": {
     "provider": "JPX_DAILY_REPORT",

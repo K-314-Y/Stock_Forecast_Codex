@@ -251,7 +251,7 @@ class AcquisitionTests(unittest.TestCase):
         (self.root / 'config/jpx_daily_acquisition_config.json').write_text(json.dumps(self.policy))
 
     def valid_acquisition(self):
-        # Test-only policy permits an old local fixture; production is Oct5/6/7.
+        # Legacy target fields are irrelevant to validated historical admission.
         self.policy['historical_direct']['allowed_sessions'] = ['2026-09-15']
         self.policy['historical_direct']['forecast_target'] = '2026-09-18'
         self.save_policy()
@@ -317,8 +317,8 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(direct.acquire_one(self.root, SESSION, transport=transport)['status'], 'NOT_YET_AVAILABLE')
         self.assertEqual(transport.calls, [direct.LISTING])
 
-    def test_outside_allowlist_and_latest_fresh_session_rejected(self):
-        for session in ('2026-10-08', '2026-10-09', '2026-09-15'):
+    def test_future_and_unknown_calendar_session_rejected(self):
+        for session in ('2026-10-12', '2026-10-13', '2026-09-19'):
             with self.subTest(session=session), self.assertRaisesRegex(ValueError, 'NOT_APPROVED'):
                 direct.acquire_one(self.root, session, transport=MockTransport([]))
 

@@ -1093,8 +1093,7 @@ def discover_json_one(root, session, *, transport, evidence_folder, run_state=No
 def _discover_json(root, session, *, transport, evidence_folder, _listing, context):
     root = Path(root).resolve()
     policy, policy_hash = _policy(root)
-    if session not in policy['allowed_sessions']:
-        raise ValueError('NOT_APPROVED_HISTORICAL_SESSION')
+    _historical_calendar(root, policy, session, _now())
     folder = Path(evidence_folder)
     folder.mkdir()  # Every diagnostic attempt has a fresh create-only folder.
     def fetch(label, url):
@@ -1181,9 +1180,30 @@ def _policy(root):
             or policy['listing_url'] != LISTING or set(policy['allowed_hosts']) != HOSTS
             or policy.get('automatic_retry') is not True or policy.get('max_retries') != 2
             or policy.get('stop_policy_version') != lifecycle.VERSION or policy['scheduled']
+            or policy.get('session_admission') != 'VALIDATED_COMPLETED_HISTORICAL_SESSION'
+            or policy.get('calendar') != 'analysis/calendar_validation_2026-09-12.json'
             or config['timezone'] != 'Asia/Tokyo'):
         raise ValueError('HISTORICAL_DIRECT_POLICY_INVALID')
     return policy, core.sha256(path)
+
+
+def _historical_calendar(root, policy, session, now):
+    """Historical market admission is independent of Forecast target/NOT_RUN."""
+    path = root / policy['calendar']
+    body = path.read_bytes()
+    if hashlib.sha256(body).hexdigest() != policy.get('calendar_sha256'):
+        raise ValueError('HISTORICAL_CALENDAR_HASH_MISMATCH')
+    calendar = frozen.strict_json(body)
+    days = calendar['jp_sessions']
+    if (now.tzinfo is None or now.utcoffset() is None or not days
+            or days != sorted(set(days))
+            or any(date.fromisoformat(day).isoformat() != day for day in days)
+            or not isinstance(session, str) or date.fromisoformat(session).isoformat() != session
+            or not calendar['validation_range']['start'] <= session <= calendar['validation_range']['end']):
+        raise ValueError('HISTORICAL_CALENDAR_OR_CLOCK_INVALID')
+    if session not in days or session >= _jpx_observation_day(now):
+        raise ValueError('NOT_APPROVED_HISTORICAL_SESSION')
+    return calendar
 
 
 def _already_local(root, session, calendar):
@@ -1250,6 +1270,14 @@ def _verified_acquisition(folder, session):
             raise ValueError('REUSED_ACQUISITION_SCOPE_CONFLICT')
         _, raw = _verified_acquisition(prior_folder, session)
         return receipt, raw
+    start_record = core.read_frozen(folder / 'start.json')
+    if receipt['policy_sha256'] != start_record['policy_sha256']:
+        raise ValueError('ACQUISITION_POLICY_MISMATCH')
+    stamps = [datetime.fromisoformat(receipt[k]) for k in
+              ('started_at', 'listing_observed_at', 'completed_at')]
+    if (any(s.tzinfo is None for s in stamps) or stamps != sorted(stamps)
+            or stamps[-1] > _now() or session >= _jpx_observation_day(stamps[0])):
+        raise ValueError('ACQUISITION_CLOCK_INVALID')
     raw = Path(receipt['raw_path']).resolve()
     if (receipt.get('session') != session or receipt.get('acquisition_method') != METHOD
             or receipt.get('source_role') != 'OUTCOME_ONLY' or receipt.get('listing_url') != LISTING
@@ -1347,16 +1375,9 @@ def acquire_one(root, session, *, transport, resolution=None, run_state=None):
     """
     root = Path(root).resolve()
     policy, policy_hash = _policy(root)
-    calendar = json.loads((root / 'analysis/calendar_validation_2026-09-12.json').read_bytes())
     now = _now()
-    if (now.tzinfo is None or calendar['jp_sessions'] != sorted(set(calendar['jp_sessions']))
-            or not calendar['validation_range']['start'] <= session <= calendar['validation_range']['end']):
-        raise ValueError('HISTORICAL_CALENDAR_OR_CLOCK_INVALID')
+    calendar = _historical_calendar(root, policy, session, now)
     observation_day = _jpx_observation_day(now)
-    prior = [s for s in calendar['jp_sessions'] if s < policy['forecast_target']]
-    if (session not in policy['allowed_sessions'] or session not in calendar['jp_sessions']
-            or not prior or session >= prior[-1] or session >= observation_day):
-        raise ValueError('NOT_APPROVED_HISTORICAL_SESSION')
     store = root / 'data/jpx_historical_direct'
     with frozen._locked(store):
         stops = lifecycle.Stops(store)

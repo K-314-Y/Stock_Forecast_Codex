@@ -60,6 +60,9 @@ class HistoricalPolicyTests(unittest.TestCase):
         sessions = ['2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09']
         (self.root / 'analysis/calendar_validation_2026-09-12.json').write_text(json.dumps(
             dict(jp_sessions=sessions, validation_range=dict(start=sessions[0], end=sessions[-1]))))
+        config_value = json.loads((self.root / 'config/jpx_daily_acquisition_config.json').read_bytes())
+        config_value['historical_direct']['calendar_sha256'] = core.sha256(self.root / config_value['historical_direct']['calendar'])
+        (self.root / 'config/jpx_daily_acquisition_config.json').write_text(json.dumps(config_value))
         self.store = self.root / 'data/jpx_historical_direct'
         self.addCleanup(patch.stopall)
         patch.object(d, '_now', return_value=NOW).start()

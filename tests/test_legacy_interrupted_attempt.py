@@ -30,6 +30,8 @@ class LegacyAttemptTests(unittest.TestCase):
                                      '2026-10-09', '2026-10-13'],
                         validation_range=dict(start='2026-10-01', end='2026-10-31'))
         (self.root / 'analysis/calendar_validation_2026-09-12.json').write_text(json.dumps(calendar))
+        config['historical_direct']['calendar_sha256'] = core.sha256(self.root / config['historical_direct']['calendar'])
+        (self.root / 'config/jpx_daily_acquisition_config.json').write_text(json.dumps(config))
         self.transport = MockTransport([response(listing(session='2026-10-06'))])
         self.clock = patch.object(direct, '_now', return_value=datetime(2026, 10, 12, 6, tzinfo=timezone.utc))
         self.clock.start()
