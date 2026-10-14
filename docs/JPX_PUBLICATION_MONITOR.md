@@ -1,5 +1,9 @@
 # Bounded JPX publication monitor
 
+For calendar-selected new windows and the 08:35 final check, see
+[Task 10C-7A deployment](FORWARD_REPAIR_10C_7A.md). The original one-night
+authorization and its immutable completed evidence are described below.
+
 This task explicitly authorizes only metadata polling for 2026-10-13, until
 2026-10-14 08:45 JST. The monitor never imports execution modules and never
 fetches a PDF. Fresh, Forecast, Freeze, scoring, historical registration,

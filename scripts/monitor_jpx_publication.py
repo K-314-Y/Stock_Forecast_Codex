@@ -45,6 +45,10 @@ FINALIZATION_RETRY_SECONDS = 3600
 CODE_PATHS = ('scripts/monitor_jpx_publication.py',
               'scripts/install_jpx_publication_monitor.py',
               'scripts/forecast_not_run_ledger.py')
+WINDOW_SCHEMA = 'jpx-publication-window-v2'
+FINAL_CHECK_LEAD = timedelta(minutes=10)
+FINAL_CHECK_LATEST_LEAD = timedelta(minutes=5)
+MONTHLY_FAMILY = '/automation/markets/statistics-equities/daily/json/'
 CHALLENGE = re.compile(
     r'captcha|access\s*denied|security\s*challenge|verify.{0,30}(human|browser)|'
     r'checking\s+your\s+browser|just\s+a\s+moment|cloudflare\s+ray|'
@@ -195,6 +199,49 @@ def official_url(value, *, json_only=False):
     return value
 
 
+def calendar_window(root, target=None, *, now=None):
+    """Select the next eligible window from the hash-validated JPX calendar.
+
+    An explicit target pins an already armed window, including late bookkeeping;
+    it never advances that window to another session after a restart.
+    """
+    root = Path(root).resolve()
+    rules = strict_json((root / 'config/forward_trial_execution_policy.json').read_bytes())
+    path = safe_path(root, rules['calendar'])
+    if digest(path) != rules['calendar_sha256']:
+        raise ValueError('VALIDATED_CALENDAR_HASH_MISMATCH')
+    days = strict_json(path.read_bytes())['jp_sessions']
+    if not days or days != sorted(set(days)):
+        raise ValueError('VALIDATED_CALENDAR_INVALID')
+    for day in days:
+        if date.fromisoformat(day).isoformat() != day:
+            raise ValueError('VALIDATED_CALENDAR_INVALID')
+    if target is None:
+        now = now or datetime.now(JST)
+        if now.tzinfo is None:
+            raise ValueError('TIMEZONE_REQUIRED')
+        prohibited = not_run.sessions(root, rules)
+        target = next((day for day in days if day not in prohibited and
+                       now < datetime.fromisoformat(day + 'T08:45:00+09:00')), None)
+    if target not in days or days.index(target) == 0:
+        raise ValueError('VALIDATED_CALENDAR_EXHAUSTED_OR_TARGET_INVALID')
+    return dict(target_session=target, previous_session=days[days.index(target) - 1],
+                deadline=target + 'T08:45:00+09:00')
+
+
+def configure_window(root, target=None, *, now=None):
+    """Process-start configuration only; CLI services each pin one window."""
+    global SESSION, TARGET, DEADLINE, UNIT, ABSENT, DETECTED, TERMINAL
+    window = calendar_window(root, target, now=now)
+    SESSION, TARGET = window['previous_session'], window['target_session']
+    DEADLINE = datetime.fromisoformat(window['deadline'])
+    UNIT = 'jpx-publication-' + SESSION.replace('-', '')
+    ABSENT = 'JPX_' + SESSION.replace('-', '_') + '_NOT_YET_AVAILABLE'
+    DETECTED = 'JPX_' + SESSION.replace('-', '_') + '_PUBLICATION_DETECTED'
+    TERMINAL = {DETECTED, EXPIRED, STOP}
+    return window
+
+
 def verify_context(root, folder):
     context = read_state(folder / 'context.json')
     if context['target_session'] != SESSION or datetime.fromisoformat(context['deadline']) != DEADLINE:
@@ -210,7 +257,14 @@ def verify_context(root, folder):
     days = strict_json(calendar_path.read_bytes())['jp_sessions']
     if days != sorted(set(days)) or SESSION not in days or TARGET not in days:
         raise ValueError('MONITOR_CALENDAR_CONFLICT')
-    if days[days.index(SESSION) + 1] != TARGET or SESSION not in not_run.sessions(root, rules):
+    window_v2 = context.get('schema_version') == WINDOW_SCHEMA
+    if days[days.index(SESSION) + 1] != TARGET:
+        raise ValueError('MONITOR_TARGET_POLICY_CONFLICT')
+    if window_v2:
+        if (context.get('forecast_target_session') != TARGET
+                or TARGET in not_run.sessions(root, rules)):
+            raise ValueError('MONITOR_TARGET_POLICY_CONFLICT')
+    elif SESSION not in not_run.sessions(root, rules):
         raise ValueError('MONITOR_TARGET_POLICY_CONFLICT')
     branch = subprocess.check_output(['git', '-C', str(root), 'branch', '--show-current'], text=True).strip()
     if branch != BRANCH:
@@ -228,9 +282,12 @@ def verify_context(root, folder):
             or 'config/forward_trial_execution_policy.json' not in context['protected_references']):
         raise ValueError('MONITOR_REQUIRED_PROTECTION_MISSING')
     source = strict_json(safe_path(root, context['discovery_reference']).read_bytes())
-    if (source['session'] != SESSION or source['pdf_requests'] != 0
+    if ((source['session'][:7] != SESSION[:7] if window_v2 else source['session'] != SESSION)
+            or source['pdf_requests'] != 0
             or source['schema_version'] != 'jpx-json-discovery-v1'
             or source['monthly_json_reference_url'] != context['monthly_url']):
+        raise ValueError('MONITOR_DISCOVERY_IDENTITY_FAILURE')
+    if window_v2 and not urlsplit(context['monthly_url']).path.startswith(MONTHLY_FAMILY):
         raise ValueError('MONITOR_DISCOVERY_IDENTITY_FAILURE')
     return official_url(context['monthly_url'], json_only=True), armed['code_commit']
 
@@ -339,7 +396,24 @@ def _completed_history_receipt(root, deadline, receipt):
 
 def record_not_run(root, recorded_at):
     rules = strict_json((root / 'config/forward_trial_execution_policy.json').read_bytes())
-    if SESSION not in not_run.static_sessions(rules):
+    context_path = root / 'state/jpx_publication_monitor' / SESSION / 'context.json'
+    window_v2 = present(context_path) and read_state(context_path).get('schema_version') == WINDOW_SCHEMA
+    if window_v2:
+        if calendar_window(root, TARGET)['previous_session'] != SESSION:
+            raise ValueError('PERMANENT_NOT_RUN_POLICY_CONFLICT')
+        # Fail closed if manual execution has already frozen this target. The
+        # metadata-only monitor never validates or rewrites Forecast bundles.
+        primary = strict_json((root / 'config/primary_forward_trial_v1.json').read_bytes())
+        store = safe_path(root, primary['forecast_store'])
+        if store.exists():
+            for bundle in store.iterdir():
+                if bundle.name.startswith('.') or not bundle.is_dir():
+                    continue
+                path = safe_path(root, str((bundle / 'receipt.json').relative_to(root)))
+                receipt = strict_json(path.read_bytes())
+                if receipt['target_session'] == TARGET:
+                    raise ValueError('FROZEN_FORECAST_PRESENT_NOT_RUN_FORBIDDEN')
+    elif SESSION not in not_run.sessions(root, rules):
         raise ValueError('PERMANENT_NOT_RUN_POLICY_CONFLICT')
     # Already tracked exclusions remain authoritative; never rewrite old policy.
     not_run.record(root, TARGET, reason='FORECAST_DEADLINE_EXPIRED_WITHOUT_VALIDATED_HISTORY',
@@ -468,7 +542,7 @@ def run_deadline_finalization(root=ROOT, *, sleep=time.sleep):
 
 
 def check_once(root=ROOT, *, now=None, fetch=get_monthly, context_check=verify_context,
-               history_check=completed_history_in_time, finalize_only=False):
+               history_check=completed_history_in_time, finalize_only=False, final_check=False):
     root = Path(root).resolve()
     live_clock = now is None
     now = now or datetime.now(JST)
@@ -519,16 +593,33 @@ def check_once(root=ROOT, *, now=None, fetch=get_monthly, context_check=verify_c
         try:
             url, commit = context_check(root, folder)
             result.update(source_identity={'monthly_json_url': url}, code_commit=commit)
-            if now.date() < date.fromisoformat(SESSION):
-                raise ValueError('MONITOR_WINDOW_NOT_STARTED')
             if old and old['result_state'] == PENDING:
                 raise ValueError('INTERRUPTED_CHECK_REVIEW_REQUIRED')
+            if final_check:
+                if not DEADLINE - FINAL_CHECK_LEAD <= now <= DEADLINE - FINAL_CHECK_LATEST_LEAD:
+                    raise ValueError('FINAL_CHECK_OUTSIDE_APPROVED_WINDOW')
+                if old and old.get('final_publication_check') and not present(folder / 'final_check_reserved.json'):
+                    raise ValueError('FINAL_CHECK_RESERVATION_MISSING')
+                if present(folder / 'final_check_reserved.json'):
+                    reservation = read_state(folder / 'final_check_reserved.json')
+                    stamp = datetime.fromisoformat(reservation['reserved_at'])
+                    if (reservation.get('target_session') != TARGET
+                            or reservation.get('deadline') != DEADLINE.isoformat()
+                            or stamp.tzinfo is None or now < stamp or old is None):
+                        raise ValueError('FINAL_CHECK_RESERVATION_INVALID')
+                    return old  # A completed final check cannot be repeated.
+            if now.date() < date.fromisoformat(SESSION):
+                raise ValueError('MONITOR_WINDOW_NOT_STARTED')
             if old:
                 checked = datetime.fromisoformat(old['checked_at_jst'])
                 if checked.tzinfo is None or now < checked:
                     raise ValueError('MONITOR_CLOCK_ROLLBACK')
-                if now - checked < timedelta(hours=1):
+                if now - checked < timedelta(hours=1) and not final_check:
                     return old  # Repeated manual/scheduled calls cannot increase cadence.
+            if final_check:
+                write_state(folder / 'final_check_reserved.json', dict(
+                    target_session=TARGET, deadline=DEADLINE.isoformat(), reserved_at=now.isoformat()))
+                result['final_publication_check'] = True
             result['result_state'] = PENDING
             write_state(folder / 'latest.json', result)  # Durable reservation before GET.
             if live_clock and (finalized_at := datetime.now(JST)) >= DEADLINE:
@@ -562,7 +653,7 @@ def systemd_env():
 
 
 def disable_timers(*, all_timers=False):
-    timers = [UNIT + '.timer']
+    timers = [UNIT + '.timer', UNIT + '-final.timer']
     if all_timers:
         timers.append(UNIT + '-deadline.timer')
     subprocess.run(['systemctl', '--user', 'disable', '--now', *timers],
@@ -571,19 +662,28 @@ def disable_timers(*, all_timers=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--session', required=True, choices=[SESSION])
+    parser.add_argument('--session', required=True)
+    parser.add_argument('--target-session', help='Calendar-validated pinned Forecast target')
     parser.add_argument('--deadline', required=True)
     parser.add_argument('--once', action='store_true', required=True)
     parser.add_argument('--scheduled', action='store_true')
     parser.add_argument('--finalize', action='store_true', help='Bounded deadline bookkeeping only; no network')
+    parser.add_argument('--final-check', action='store_true', help='One final monthly JSON check at 08:35 JST')
     parser.add_argument('--finalization-failed', action='store_true', help='Latch failed deadline service STOP; no network')
     args = parser.parse_args()
+    if args.target_session:
+        configure_window(ROOT, args.target_session)
+    if args.session != SESSION:
+        parser.error('Session must be the validated previous JPX session')
+    if sum((args.finalize, args.finalization_failed, args.final_check)) > 1:
+        parser.error('Choose exactly one monitor operation')
     if datetime.fromisoformat(args.deadline) != DEADLINE:
         parser.error('Only the approved aware deadline is accepted')
     if args.finalize and datetime.now(JST) < DEADLINE:
         parser.error('Deadline finalization cannot run before cutoff')
     result = (stop_finalization() if args.finalization_failed else
-              run_deadline_finalization() if args.finalize else check_once())
+              run_deadline_finalization() if args.finalize else
+              check_once(final_check=True) if args.final_check else check_once())
     # A request that crosses the cutoff cannot count as publication in time.
     if not args.finalize and not args.finalization_failed and datetime.now(JST) >= DEADLINE and not result['deadline_expired']:
         result = check_once()
@@ -592,7 +692,7 @@ def main():
         disable_timers(all_timers=result['deadline_expired'])
         if result['result_state'] == DETECTED and not result['deadline_expired']:
             try:
-                subprocess.run(['notify-send', 'JPX 10/13 公開を検出',
+                subprocess.run(['notify-send', 'JPX ' + SESSION + ' 公開を検出',
                                 '監視停止。Task 10C-6c の公式取得・検証・履歴刷新・preflight が必要です。Forecast は未実行。'],
                                env=systemd_env(), timeout=5, check=False)
             except (OSError, subprocess.TimeoutExpired):

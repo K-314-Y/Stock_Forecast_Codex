@@ -90,7 +90,15 @@ class ProspectivePITTests(unittest.TestCase):
     def test_mtime_never_used(self):
         _,path,pre=self.pre()
         os.utime(path/'prospective.json',(0,0))
-        with patch.object(Path,'stat',side_effect=AssertionError('mtime prohibited')):
+        # The hardened NOT_RUN reader performs lstat for no-follow traversal.
+        # Permit only its file-type check; no file timestamp is available to PIT.
+        from types import SimpleNamespace
+        actual_stat=Path.stat
+        def mode_only(source, *, follow_symlinks=True):
+            if follow_symlinks:
+                raise AssertionError('mtime prohibited')
+            return SimpleNamespace(st_mode=actual_stat(source,follow_symlinks=False).st_mode)
+        with patch.object(Path,'stat',mode_only):
             ledger.validate_pre_session(pre)
         self.assertEqual(core.read_frozen(path/'prospective.json')['rows'][0]['feature_available_at'],NOW.isoformat())
 
