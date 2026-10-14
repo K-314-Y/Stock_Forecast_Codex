@@ -284,6 +284,46 @@ class ForwardHistoryTests(unittest.TestCase):
         with self.assertRaises(OSError):
             self.refresh()
 
+    def test_legacy_method_requires_anchored_parsed_and_signed_entry_identity(self):
+        # Emulate an approved old parser without its acquisition_method field.
+        entry = self.entries[0]
+        day = entry['session_date']
+        self.parsed[day].pop('acquisition_method')
+        path = Path(entry['normalized_output_path'])
+        self.write(path, self.parsed[day])
+        entry['normalized_output_sha256'] = core.sha256(path)
+        self.save_manifest()
+        bridge_path = bridge._root() / day / 'record.json'
+        record = core.read_frozen(bridge_path)
+        record.pop('hmac_sha256')
+        record['parsed_sha256'] = core.sha256(path)
+        record['manifest_entry_sha256'] = history._digest(entry)
+        self.write(bridge_path, history._signed(record))
+        bridge_path.with_suffix('.sha256').write_text(core.sha256(bridge_path) + '\n')
+        anchor = core.read_frozen(self.registered)
+        anchor['source_hashes'].update({str(path): core.sha256(path), str(bridge_path): core.sha256(bridge_path),
+            str(bridge_path.with_suffix('.sha256')): core.sha256(bridge_path.with_suffix('.sha256')),
+            str(self.manifest_path): core.sha256(self.manifest_path)})
+        self.reseal_anchor(anchor)
+        self.register()
+        self.load()
+        # Changing a legacy label after the checkpoint cannot inherit approval.
+        entry['acquisition_origin'] = 'COMPUTER_USE_BROWSER'
+        self.save_manifest()
+        with self.assertRaisesRegex(ValueError, 'INPUT_CHANGED_BEFORE_FREEZE'):
+            self.refresh()
+
+    def test_unanchored_legacy_method_is_rejected(self):
+        day = '2026-10-13'
+        self.add_day(day)
+        self.parsed[day].pop('acquisition_method')
+        path = Path(self.entries[-1]['normalized_output_path'])
+        self.write(path, self.parsed[day])
+        self.entries[-1]['normalized_output_sha256'] = core.sha256(path)
+        self.save_manifest()
+        with self.assertRaisesRegex(ValueError, 'INPUT_CHANGED_BEFORE_FREEZE'):
+            self.refresh()
+
     def test_retention_swap_after_validation_is_not_blessed(self):
         self.add_day('2026-10-13')
         self.save_manifest()

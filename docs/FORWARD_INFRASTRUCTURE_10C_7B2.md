@@ -30,6 +30,8 @@ HMAC認証済みTask 10A anchor、immutable source hashes、SHA-bound calendar�
 各official parsed/raw entry、direct acquisition discovery、署名済みHistorical Close bridgeを
 再検証する。bridgeのない既存anchor行は承認済み表現とoriginal hashesを保持し、新provenanceを
 捏造しない。anchor後の新しいcloseは既存Historical Close bridge以外から追加しない。
+旧Parserのmethod未記載/旧manual labelは、anchorのparsed hashと署名済みbridge entry hashが
+両方一致する既存entryに限り認証する。unanchored legacy labelやdirect source downgradeは拒否。
 
 retention全体のSHAとentry hashesを含むcanonical manifestはtimestampを含まない。
 同じvalidated history/evidenceならsame canonical content / SHA / artifact。正当にofficial entry

@@ -106,7 +106,7 @@ def _anchor(rules, calendar, thresholds, now):
     return record, refs
 
 
-def _validated_manifest(now, calendar):
+def _validated_manifest(now, calendar, anchor):
     """Validate every entry, never bless an arbitrary replacement's new hash."""
     path = _manifest_path()
     body = _bytes(path)
@@ -131,8 +131,21 @@ def _validated_manifest(now, calendar):
                        'OFFICIAL_LISTING_DIRECT_HTTPS': 'OFFICIAL_LISTING_DIRECT_HTTPS'}
             origin = entry.get('acquisition_origin')
             if origin not in methods or parsed.get('acquisition_method') != methods[origin]:
-                raise ValueError('SOURCE_IDENTITY_MISMATCH')
-            if parsed['acquisition_method'] == 'OFFICIAL_LISTING_DIRECT_HTTPS':
+                # Old parser metadata is not a new source approval. Only the
+                # independently anchored parsed bytes AND authenticated original
+                # bridge entry can certify a legacy manual/browser label.
+                if (origin not in ('HUMAN_MANUAL_DOWNLOAD', 'COMPUTER_USE_BROWSER')
+                        or parsed.get('acquisition_method') not in (None, 'HUMAN_MANUAL_DOWNLOAD')
+                        or anchor['source_hashes'].get(str(parsed_path)) != entry['normalized_output_sha256']):
+                    raise ValueError('SOURCE_IDENTITY_MISMATCH')
+                bridge_path = historical._root() / day / 'record.json'
+                bridge_record, bound = _frozen(bridge_path, with_hashes=True)
+                _authenticated(bridge_record)
+                if (anchor['source_hashes'].get(str(bridge_path)) != bound[str(bridge_path)]
+                        or bridge_record['session_date'] != day
+                        or bridge_record['manifest_entry_sha256'] != _digest(entry)):
+                    raise ValueError('SOURCE_IDENTITY_MISMATCH')
+            if parsed.get('acquisition_method') == 'OFFICIAL_LISTING_DIRECT_HTTPS':
                 from providers.jp.jpx_manual import historical_direct as direct
                 folder = parsed_path.parent
                 for name in ('acquisition.json', 'listing.html'):
@@ -168,7 +181,7 @@ def _build_manifest(history_end, now):
     if (history_end not in calendar['jp_sessions'] or history_end < rules['historical_through']
             or artifacts._stamp(history_end + 'T15:30:00+09:00') >= now):
         raise ValueError('FORWARD_HISTORY_END_INVALID')
-    retention = _validated_manifest(now, calendar)
+    retention = _validated_manifest(now, calendar, anchor)
     stocks = {ticker: list(rows) for ticker, rows in anchor['stocks'].items()}
     # Revalidate the entire official prefix: signed bridge entries certify that
     # original manifest entries and close values have not been substituted.
