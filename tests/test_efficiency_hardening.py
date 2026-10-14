@@ -608,7 +608,7 @@ class HistoricalDayEfficiencyTests(unittest.TestCase):
                             manifest_sha256=core.sha256(manifest_path))
             with patch.object(core,'ROOT',root), \
                  patch.object(execution_policy,'load_policy',return_value={'historical_through':'2026-10-08'}), \
-                 patch.object(inputs,'load_validated_history',return_value=({t:[] for t in core.CORE},{})), \
+                 patch.object(inputs,'load_validated_history',return_value=({t:[dict(session_date='2026-10-08',close=99.0)] for t in core.CORE},{})), \
                  patch.object(historical,'_key',return_value=key) as authenticate, \
                  patch.object(historical,'_policy',return_value=({},policy_path,core.sha256(policy_path))) as policy, \
                  patch.object(forward_artifacts,'_validated_jpx',return_value=(parsed,provenance)) as validate, \
@@ -617,7 +617,7 @@ class HistoricalDayEfficiencyTests(unittest.TestCase):
                 calendar={'jp_sessions':['2026-10-08',day,'2026-10-13']}
                 for execution in range(2):
                     stocks, hashes=inputs.load_execution_history(calendar,{},started,'2026-10-13')
-                    self.assertTrue(all(stocks[ticker]==[dict(session_date=day,close=100.0)] for ticker in core.CORE))
+                    self.assertTrue(all(stocks[ticker]==[dict(session_date='2026-10-08',close=99.0),dict(session_date=day,close=100.0)] for ticker in core.CORE))
                     self.assertEqual(validate.call_count, execution+1)
                     self.assertEqual(authenticate.call_count, execution+1)
                     self.assertEqual(policy.call_count, execution+1)

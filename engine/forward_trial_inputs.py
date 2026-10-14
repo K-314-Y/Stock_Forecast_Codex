@@ -75,6 +75,10 @@ def register_validated_history(preparation_path):
 
 def load_validated_history(calendar, thresholds, execution_started):
     """Only the independently registered history-only snapshot can be loaded."""
+    from engine.forward_history import load_registered_history
+    refreshed = load_registered_history(calendar, thresholds, execution_started)
+    if refreshed is not None:
+        return refreshed[:2]
     rules = policy.load_policy()
     path = _history_path()
     record = core.read_frozen(path)
@@ -91,19 +95,25 @@ def load_validated_history(calendar, thresholds, execution_started):
             or set(record['stocks']) != set(core.CORE)):
         raise ValueError('HISTORICAL_INPUT_INVALID')
     artifacts._unchanged(record['source_hashes'])
-    for ticker, rows in record['stocks'].items():
+    _validate_history_rows(record['stocks'], calendar, thresholds, rules['historical_through'])
+    return record['stocks'], {str(path): core.sha256(path), **record['source_hashes']}
+
+
+def _validate_history_rows(stocks, calendar, thresholds, through):
+    if set(stocks) != set(core.CORE):
+        raise ValueError('HISTORICAL_INPUT_INVALID')
+    for ticker, rows in stocks.items():
         dates = [row['session_date'] for row in rows]
         end = thresholds[ticker]['training_end_date']
         expected_days = [day for day in calendar['jp_sessions']
-                         if end < day <= rules['historical_through']]
+                         if end < day <= through]
         if (len(rows) < 61 or dates != sorted(set(dates))
-                or dates[-1] != rules['historical_through']
+                or dates[-1] != through
                 or [day for day in dates if day > end] != expected_days
                 or sum(day <= end for day in dates) != 61
                 or any(set(row) != {'session_date', 'close'} or type(row['close']) not in (int, float)
                        or not math.isfinite(row['close']) or row['close'] <= 0 for row in rows)):
             raise ValueError('HISTORICAL_CONTINUITY_OR_NUMERIC_INVALID')
-    return record['stocks'], {str(path): core.sha256(path), **record['source_hashes']}
 
 
 def load_execution_history(calendar, thresholds, started, previous):
@@ -115,7 +125,9 @@ def load_execution_history(calendar, thresholds, started, previous):
     stocks, hashes = load_validated_history(calendar, thresholds, started)
     stocks = {ticker: list(rows) for ticker, rows in stocks.items()}
     cutoff = fresh._receipt_time(started.astimezone(fresh.JST).date().isoformat() + 'T08:45:00+09:00')
-    through = policy.load_policy()['historical_through']
+    through = stocks[core.CORE[0]][-1]['session_date']
+    if through >= previous:
+        raise ValueError('HISTORICAL_SESSION_OR_ROLE_MISMATCH')
     for day in calendar['jp_sessions']:
         if through < day < previous:
             path = historical._root() / day / 'record.json'
